@@ -26,11 +26,66 @@
 
 ## Quick Start
 
-LeRobot can be installed directly from PyPI.
+Create docker environment with script in lerobot/pi_env_setting
+```bash
+./BuildDocker.sh
+./RunDocker.sh
+```
+
+Check that
+1.  check the setting of Cache is corrected
+```bash
+echo $TRITON_CACHE_DIR # /cache/runtime/triton
+echo $TORCHINDUCTOR_CACHE_DIR # /cache/runtime/torchinductor
+echo $XDG_CACHE_HOME # /cache/runtime/xdg
+test -w /cache/runtime/triton && echo "triton writable" # return triton writable
+test -w /cache/runtime/torchinductor && echo "inductor writable" # return inductor writable
+```
+2. check home dic
+```bash
+whoami # user name in the host
+echo $HOME #home/{user name in the host}
+```
+
+Based on the docker environment(with conda installation and mount lerobot repo), build lerobot under the repo folder
 
 ```bash
-pip install lerobot
-lerobot-info
+# create conda env
+conda create -y -n lerobot python=3.10
+conda init
+conda activate lerobot
+
+# install required pkg
+conda install ffmpeg -c conda-forge -y
+
+# install the library in editable mode
+pip install -e .
+```
+
+Run Pi-0.5 in Libero
+```bash
+# install pi
+pip install -e ".[pi]"
+./pi_setting/env_setting/Transformer_version_reset.sh
+
+# install libero
+conda install cmake==3.24.3 -y # make sure cmake pkg is compatible with libero, see https://github.com/huggingface/lerobot/issues/105
+pip install -e ".[libero]"
+
+# login huggingface and input token (create your own huggingface account and add token before do this step)
+huggingface-cli login
+
+# run evaluation
+lerobot-eval \
+  --output_dir=/logs/ \
+  --env.type=libero \
+  --env.task=libero_spatial,libero_object,libero_goal,libero_10 \
+  --eval.batch_size=1 \
+  --eval.n_episodes=10 \
+  --policy.path=lerobot/pi05_libero_finetuned \
+  --policy.n_action_steps=10 \
+  --output_dir=./eval_logs/ \
+  --env.max_parallel_tasks=1
 ```
 
 > [!IMPORTANT]
