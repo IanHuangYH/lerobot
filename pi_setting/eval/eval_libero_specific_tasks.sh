@@ -10,11 +10,14 @@ TASK_SUITE=libero_spatial,libero_object # libero_spatial,libero_object,libero_go
 EPISODE=10  # run amount for each task (for success rate)
 TASK_IDS='[0,1]'  # different scenes for one group
 
+# Set batch_size to min(EPISODE, 10) to avoid validation errors
+BATCH_SIZE=$(( EPISODE < 10 ? EPISODE : 10 ))
+
 # Override Docker's CUDA_VISIBLE_DEVICES to make both GPUs visible
 CUDA_VISIBLE_DEVICES=$ALL_GPU lerobot-eval  \
  --env.type=libero      \
  --env.task=$TASK_SUITE  \
- --eval.batch_size=10    \
+ --eval.batch_size=$BATCH_SIZE    \
  --eval.n_episodes=$EPISODE   \
  --policy.path=lerobot/pi05_libero_finetuned    \
  --policy.n_action_steps=10 \
