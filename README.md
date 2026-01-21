@@ -66,11 +66,13 @@ Run Pi-0.5 in Libero
 ```bash
 # install pi
 pip install -e ".[pi]"
-./pi_setting/env_setting/Transformer_version_reset.sh
 
 # install libero
 conda install cmake==3.24.3 -y # make sure cmake pkg is compatible with libero, see https://github.com/huggingface/lerobot/issues/105
 pip install -e ".[libero]"
+
+# modify pkg for https://github.com/huggingface/lerobot/issues/2641
+./pi_setting/env_setting/Transformer_version_reset.sh
 
 # login huggingface and input token (create your own huggingface account and add token before do this step)
 huggingface-cli login
