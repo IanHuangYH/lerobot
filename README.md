@@ -78,16 +78,7 @@ pip install -e ".[libero]"
 huggingface-cli login
 
 # run evaluation
-lerobot-eval \
-  --output_dir=/logs/ \
-  --env.type=libero \
-  --env.task=libero_spatial,libero_object,libero_goal,libero_10 \
-  --eval.batch_size=1 \
-  --eval.n_episodes=10 \
-  --policy.path=lerobot/pi05_libero_finetuned \
-  --policy.n_action_steps=10 \
-  --output_dir=./eval_logs/ \
-  --env.max_parallel_tasks=1
+./pi_setting/eval/eval_libero_specific_tasks.sh
 ```
 
 > [!IMPORTANT]
