@@ -410,11 +410,11 @@ def preserve_positions_add_objects(
     new_env.close()
     
     print("\n" + "=" * 80)
-    print("✅ S✓ PRESERVED positions for {len(preserved_objects)} objects")
+    print(f"✅ S✓ PRESERVED positions for {len(preserved_objects)} objects")
     if added_objects:
         print(f"  ➕ NEW random placements for: {sorted(added_objects)}")
     if removed_objects:
-        print(f"  ➖ REMOVED from scene: {sorted(remov
+        print(f"  ➖ REMOVED from scene: {sorted(removed_objects)}")
     print(f"Generated {num_states} init states with:")
     print(f"  • PRESERVED positions for: {sorted(preserved_objects)}")
     print(f"  • NEW placements for: {sorted(added_objects)}")
