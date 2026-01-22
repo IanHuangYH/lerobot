@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import torch
 import numpy as np
+import cv2
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 
@@ -107,6 +108,71 @@ def set_object_positions(env, object_positions_dict):
     env.sim.forward()
 
 
+def visualize_init_states(
+    bddl_path: str,
+    init_states_path: str,
+    output_dir: str,
+    num_scenes: int = 1,
+):
+    """
+    Visualize initial states by rendering scenes.
+    
+    Args:
+        bddl_path: Path to BDDL file
+        init_states_path: Path to init states file
+        output_dir: Directory to save rendered images
+        num_scenes: Number of scenes to render
+    """
+    print(f"\n{'='*80}")
+    print("RENDERING INITIAL SCENES")
+    print(f"{'='*80}\n")
+    
+    # Load init states
+    print(f"Loading init states from: {init_states_path}")
+    init_states = torch.load(init_states_path, weights_only=False)
+    print(f"Total states available: {len(init_states)}")
+    
+    # Create environment with visualization resolution (matches LiberoEnv defaults)
+    print(f"Creating environment from: {bddl_path}")
+    env = OffScreenRenderEnv(
+        bddl_file_name=bddl_path,
+        camera_heights=480,  # visualization_height from LiberoEnv
+        camera_widths=640,   # visualization_width from LiberoEnv
+    )
+    
+    # Create output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Render scenes
+    num_to_render = min(num_scenes, len(init_states))
+    print(f"\nRendering {num_to_render} scenes...")
+    
+    for i in range(num_to_render):
+        # Set state and regenerate observations
+        obs = env.regenerate_obs_from_state(init_states[i])
+        
+        # Save agentview camera (flip both H and W for visualization, matching LiberoEnv.render())
+        agentview = obs.get('agentview_image', obs.get('image', None))
+        if agentview is not None:
+            # Flip both dimensions for correct orientation
+            agentview_flipped = agentview[::-1, ::-1]
+            img_path = output_path / f"scene_{i:03d}_agentview.png"
+            # Convert RGB to BGR for cv2
+            cv2.imwrite(str(img_path), cv2.cvtColor(agentview_flipped, cv2.COLOR_RGB2BGR))
+            print(f"  ✓ Saved: {img_path.name}")
+        
+        # Save eye-in-hand camera
+        eye_in_hand = obs.get('robot0_eye_in_hand_image', None)
+        if eye_in_hand is not None:
+            img_path = output_path / f"scene_{i:03d}_wrist.png"
+            cv2.imwrite(str(img_path), cv2.cvtColor(eye_in_hand, cv2.COLOR_RGB2BGR))
+    
+    env.close()
+    print(f"\n✅ Rendered {num_to_render} scenes to: {output_path}")
+    print(f"{'='*80}\n")
+
+
 def preserve_positions_add_objects(
     old_bddl_path: str,
     new_bddl_path: str,
@@ -171,12 +237,20 @@ def preserve_positions_add_objects(
             new_objects.add(name)
     
     added_objects = new_objects - old_objects
+    removed_objects = old_objects - new_objects
     preserved_objects = old_objects & new_objects
     
     print(f"   Objects in OLD env: {len(old_objects)}")
     print(f"   Objects in NEW env: {len(new_objects)}")
-    print(f"   Added objects: {sorted(added_objects)}")
-    print(f"   Preserved objects: {sorted(preserved_objects)}")
+    print(f"   ➕ Added objects: {sorted(added_objects) if added_objects else 'None'}")
+    print(f"   ➖ Removed objects: {sorted(removed_objects) if removed_objects else 'None'}")
+    print(f"   ✓ Preserved objects: {len(preserved_objects)} items")
+    
+    if removed_objects:
+        print(f"\n   ⚠️  WARNING: {len(removed_objects)} object(s) removed/replaced:")
+        for obj in sorted(removed_objects):
+            print(f"      - {obj}")
+        print(f"   → Their positions will NOT be copied to new environment")
     
     # Create joint name mappings
     print(f"\n5. Creating joint mappings...")
@@ -229,34 +303,80 @@ def preserve_positions_add_objects(
         idx = i % len(old_states)
         old_state = old_states[idx]
         
-        # Set old state
+        # Set old state in old env
         old_env.sim.set_state_from_flattened(old_state)
         old_env.sim.forward()
         
-        # Start with a fresh reset for new env to place yellow_book
-        new_env.reset()
-        new_state_obj = new_env.sim.get_state()
-        
-        # Copy qpos and qvel for ALL preserved objects
-        for obj_name in preserved_objects:
-            if obj_name in old_joint_map and obj_name in new_joint_map:
+        # If there are new objects, reset new env to place them, then copy old positions
+        if added_objects:
+            # Reset new env to randomly place new objects
+            new_env.reset()
+            new_state_obj = new_env.sim.get_state()
+            
+            # Copy qpos and qvel ONLY for objects that exist in BOTH environments
+            copied_count = 0
+            skipped_count = 0
+            
+            for obj_name in preserved_objects:
+                # Safety check: ensure object exists in both joint maps
+                if obj_name not in old_joint_map:
+                    skipped_count += 1
+                    continue
+                
+                if obj_name not in new_joint_map:
+                    # This shouldn't happen (obj is in preserved_objects), but be safe
+                    print(f"   ⚠️  WARNING: {obj_name} in preserved set but not in new joint map!")
+                    skipped_count += 1
+                    continue
+                
                 old_qpos_addr, old_qvel_addr, old_qpos_size, old_qvel_size = old_joint_map[obj_name]
                 new_qpos_addr, new_qvel_addr, new_qpos_size, new_qvel_size = new_joint_map[obj_name]
                 
-                # Copy qpos
+                # Copy qpos (position + orientation)
                 new_state_obj.qpos[new_qpos_addr:new_qpos_addr+old_qpos_size] = \
                     old_env.sim.data.qpos[old_qpos_addr:old_qpos_addr+old_qpos_size].copy()
                 
-                # Copy qvel
+                # Copy qvel (velocities)
                 new_state_obj.qvel[new_qvel_addr:new_qvel_addr+old_qvel_size] = \
                     old_env.sim.data.qvel[old_qvel_addr:old_qvel_addr+old_qvel_size].copy()
+                
+                copied_count += 1
+            
+            # Log what was done (only for first state)
+            if i == 0:
+                print(f"   State 0: Copied {copied_count} objects, Skipped {skipped_count}")
+            
+            # Set state and forward
+            new_env.sim.set_state(new_state_obj)
+            new_env.sim.forward()
+            new_state = new_env.sim.get_state().flatten()
+        else:
+            # No new objects - just use old state directly if dimensions match
+            if old_state.shape == new_env.sim.get_state().flatten().shape:
+                new_state = old_state.copy()
+            else:
+                # Dimensions differ even without new objects - copy what we can
+                new_env.reset()
+                new_state_obj = new_env.sim.get_state()
+                
+                for obj_name in preserved_objects:
+                    # Safety check: only copy if object exists in both environments
+                    if obj_name not in old_joint_map or obj_name not in new_joint_map:
+                        continue
+                    
+                    old_qpos_addr, old_qvel_addr, old_qpos_size, old_qvel_size = old_joint_map[obj_name]
+                    new_qpos_addr, new_qvel_addr, new_qpos_size, new_qvel_size = new_joint_map[obj_name]
+                    
+                    new_state_obj.qpos[new_qpos_addr:new_qpos_addr+old_qpos_size] = \
+                        old_env.sim.data.qpos[old_qpos_addr:old_qpos_addr+old_qpos_size].copy()
+                    
+                    new_state_obj.qvel[new_qvel_addr:new_qvel_addr+old_qvel_size] = \
+                        old_env.sim.data.qvel[old_qvel_addr:old_qvel_addr+old_qvel_size].copy()
+                
+                new_env.sim.set_state(new_state_obj)
+                new_env.sim.forward()
+                new_state = new_env.sim.get_state().flatten()
         
-        # Set state and forward (no physics stepping)
-        new_env.sim.set_state(new_state_obj)
-        new_env.sim.forward()
-        
-        # Save state
-        new_state = new_env.sim.get_state().flatten()
         new_states.append(new_state)
         
         if (i + 1) % 10 == 0 or i == 0:
@@ -290,12 +410,22 @@ def preserve_positions_add_objects(
     new_env.close()
     
     print("\n" + "=" * 80)
-    print("✅ SUCCESS!")
-    print("=" * 80)
+    print("✅ S✓ PRESERVED positions for {len(preserved_objects)} objects")
+    if added_objects:
+        print(f"  ➕ NEW random placements for: {sorted(added_objects)}")
+    if removed_objects:
+        print(f"  ➖ REMOVED from scene: {sorted(remov
     print(f"Generated {num_states} init states with:")
     print(f"  • PRESERVED positions for: {sorted(preserved_objects)}")
     print(f"  • NEW placements for: {sorted(added_objects)}")
     print("=" * 80)
+    
+    # Visualize the first few generated states
+    visualize_init_states(
+        bddl_path=new_bddl_path,
+        init_states_path=str(output_path),
+        output_dir=str(output_path.parent / "visualizations"),
+    )
     
     return output_path
 
