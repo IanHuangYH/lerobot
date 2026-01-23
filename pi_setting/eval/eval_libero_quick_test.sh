@@ -23,4 +23,4 @@ CUDA_VISIBLE_DEVICES=$ALL_GPU lerobot-eval  \
  --output_dir=$OUTPUTS_DIR  \
  --env.max_parallel_tasks=1 \
  --env.task_ids=$TASK_IDS \
- --env.init_states=false
+ --env.init_states=true
