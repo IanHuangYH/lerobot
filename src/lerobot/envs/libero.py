@@ -220,9 +220,20 @@ class LiberoEnv(gym.Env):
 
     def render(self):
         raw_obs = self._env.env._get_observations()
-        image = self._format_raw_obs(raw_obs)["pixels"]["image"]
-        image = image[::-1, ::-1]  # flip both H and W for visualization
-        return image
+        formatted_obs = self._format_raw_obs(raw_obs)["pixels"]
+        
+        # Get agentview (overhead) camera
+        agentview = formatted_obs["image"][::-1, ::-1]  # flip both H and W for visualization
+        
+        # Get wrist camera (if available)
+        wrist = formatted_obs.get("image2", None)
+        
+        if wrist is not None:
+            # Stack horizontally: [agentview | wrist]
+            return np.concatenate([agentview, wrist], axis=1)
+        else:
+            # Fallback to agentview only
+            return agentview
 
     def _make_envs_task(self, task_suite: Any, task_id: int = 0):
         task = task_suite.get_task(task_id)
