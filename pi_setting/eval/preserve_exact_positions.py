@@ -16,8 +16,38 @@ from pathlib import Path
 import torch
 import numpy as np
 import cv2
+import re
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
+
+
+def parse_bddl_init_placements(bddl_path):
+    """
+    Parse BDDL file to extract object -> region mappings from :init section.
+    
+    Returns:
+        dict: {object_name: region_name} e.g., {'plate_1': 'main_table_plate_region'}
+    """
+    placements = {}
+    
+    with open(bddl_path, 'r') as f:
+        content = f.read()
+    
+    # Find :init section
+    init_match = re.search(r'\(:init\s+(.*?)\s+\)', content, re.DOTALL)
+    if not init_match:
+        return placements
+    
+    init_section = init_match.group(1)
+    
+    # Parse (On object_name region_name) statements
+    # Example: (On plate_1 main_table_box_region)
+    on_statements = re.findall(r'\(On\s+(\S+)\s+(\S+)\)', init_section)
+    
+    for obj_name, region_name in on_statements:
+        placements[obj_name] = region_name
+    
+    return placements
 
 
 def extract_object_positions(env, state_vector):
@@ -222,8 +252,16 @@ def preserve_positions_add_objects(
     new_env.reset()
     print(f"   New state dimension: {new_env.sim.get_state().flatten().shape}")
     
+    # Parse BDDL files to get object -> region mappings
+    print(f"\n4. Parsing BDDL files to detect region changes...")
+    old_placements = parse_bddl_init_placements(old_bddl_path)
+    new_placements = parse_bddl_init_placements(new_bddl_path)
+    
+    print(f"   Old BDDL placements: {len(old_placements)} objects")
+    print(f"   New BDDL placements: {len(new_placements)} objects")
+    
     # Extract object lists
-    print(f"\n4. Analyzing objects in both environments...")
+    print(f"\n5. Analyzing objects in both environments...")
     old_objects = set()
     for i in range(old_env.sim.model.nbody):
         name = old_env.sim.model.body_id2name(i)
@@ -238,13 +276,77 @@ def preserve_positions_add_objects(
     
     added_objects = new_objects - old_objects
     removed_objects = old_objects - new_objects
-    preserved_objects = old_objects & new_objects
+    common_objects = old_objects & new_objects
+    
+    # Helper function to match BDDL names to MuJoCo body names
+    def find_mujoco_body_name(bddl_name, mujoco_bodies):
+        """
+        Match BDDL object name (e.g., 'plate_1') to MuJoCo body name (e.g., 'plate_1_main').
+        """
+        # Direct match
+        if bddl_name in mujoco_bodies:
+            return bddl_name
+        
+        # Try with common MuJoCo suffixes
+        for suffix in ['_main', '_body', '_base']:
+            candidate = bddl_name + suffix
+            if candidate in mujoco_bodies:
+                return candidate
+        
+        # Partial match: find body that starts with bddl_name
+        for body in mujoco_bodies:
+            if body.startswith(bddl_name + '_'):
+                return body
+        
+        return None
+    
+    # Detect which common objects have DIFFERENT regions (should get NEW positions)
+    region_changed_objects = set()
+    bddl_to_mujoco_mapping = {}  # Track BDDL name → MuJoCo body name
+    
+    for bddl_name in old_placements.keys():
+        old_region = old_placements.get(bddl_name)
+        new_region = new_placements.get(bddl_name)
+        
+        # Find the corresponding MuJoCo body name
+        mujoco_name = find_mujoco_body_name(bddl_name, common_objects)
+        
+        if mujoco_name:
+            bddl_to_mujoco_mapping[bddl_name] = mujoco_name
+            
+            if old_region and new_region and old_region != new_region:
+                region_changed_objects.add(mujoco_name)  # Use MuJoCo name
+    
+    # Objects to preserve = common objects WITHOUT region changes
+    # Only preserve objects that are in BDDL (have placement info)
+    mujoco_names_in_bddl = set(bddl_to_mujoco_mapping.values())
+    preserved_objects = mujoco_names_in_bddl - region_changed_objects
     
     print(f"   Objects in OLD env: {len(old_objects)}")
     print(f"   Objects in NEW env: {len(new_objects)}")
+    print(f"   BDDL-declared objects: {len(bddl_to_mujoco_mapping)}")
     print(f"   ➕ Added objects: {sorted(added_objects) if added_objects else 'None'}")
     print(f"   ➖ Removed objects: {sorted(removed_objects) if removed_objects else 'None'}")
-    print(f"   ✓ Preserved objects: {len(preserved_objects)} items")
+    print(f"   🔄 Region changed: {sorted(region_changed_objects) if region_changed_objects else 'None'}")
+    print(f"   ✓ Preserved (same region): {len(preserved_objects)} items")
+    
+    if region_changed_objects:
+        print(f"\n   📍 Region Changes Detected:")
+        for mujoco_name in sorted(region_changed_objects):
+            # Find the BDDL name for this MuJoCo body
+            bddl_name = None
+            for bname, mname in bddl_to_mujoco_mapping.items():
+                if mname == mujoco_name:
+                    bddl_name = bname
+                    break
+            
+            if bddl_name:
+                old_region = old_placements.get(bddl_name, 'unknown')
+                new_region = new_placements.get(bddl_name, 'unknown')
+                print(f"      {bddl_name} (MuJoCo: {mujoco_name}):")
+                print(f"         OLD: {old_region}")
+                print(f"         NEW: {new_region}")
+        print(f"   → These {len(region_changed_objects)} object(s) will get NEW random positions")
     
     if removed_objects:
         print(f"\n   ⚠️  WARNING: {len(removed_objects)} object(s) removed/replaced:")
@@ -253,7 +355,7 @@ def preserve_positions_add_objects(
         print(f"   → Their positions will NOT be copied to new environment")
     
     # Create joint name mappings
-    print(f"\n5. Creating joint mappings...")
+    print(f"\n6. Creating joint mappings...")
     old_joint_map = {}  # {object_name: (qpos_addr, qvel_addr, qpos_size, qvel_size)}
     for jid in range(old_env.sim.model.njnt):
         jname = old_env.sim.model.joint_id2name(jid)
@@ -296,8 +398,38 @@ def preserve_positions_add_objects(
     print(f"   New env joints: {len(new_joint_map)}")
     
     # Generate new states
-    print(f"\n6. Generating {num_states} new states with preserved positions...")
+    print(f"\n7. Generating {num_states} new states with preserved positions...")
     new_states = []
+    
+    # Optimization: Get template state for new objects/region-changed objects ONCE
+    template_qpos = None
+    template_qvel = None
+    if added_objects or region_changed_objects:
+        print(f"   Creating template for new object placements...")
+        new_env.reset()
+        template_state = new_env.sim.get_state()
+        # Copy the position and velocity arrays
+        template_qpos = template_state.qpos.copy()
+        template_qvel = template_state.qvel.copy()
+        print(f"   ✓ Template created (will reuse for all {num_states} states)")
+    
+    # Pre-compute copying indices for efficiency
+    copy_plan = []  # [(old_qpos_start, old_qpos_end, new_qpos_start, new_qpos_end, old_qvel_start, old_qvel_end, new_qvel_start, new_qvel_end)]
+    
+    for obj_name in preserved_objects:
+        if obj_name in old_joint_map and obj_name in new_joint_map:
+            old_qpos_addr, old_qvel_addr, old_qpos_size, old_qvel_size = old_joint_map[obj_name]
+            new_qpos_addr, new_qvel_addr, new_qpos_size, new_qvel_size = new_joint_map[obj_name]
+            
+            copy_plan.append((
+                old_qpos_addr, old_qpos_addr + old_qpos_size,
+                new_qpos_addr, new_qpos_addr + new_qpos_size,
+                old_qvel_addr, old_qvel_addr + old_qvel_size,
+                new_qvel_addr, new_qvel_addr + new_qvel_size
+            ))
+    
+    if copy_plan:
+        print(f"   ✓ Copy plan created for {len(copy_plan)} objects")
     
     for i in range(num_states):
         idx = i % len(old_states)
@@ -307,44 +439,19 @@ def preserve_positions_add_objects(
         old_env.sim.set_state_from_flattened(old_state)
         old_env.sim.forward()
         
-        # If there are new objects, reset new env to place them, then copy old positions
-        if added_objects:
-            # Reset new env to randomly place new objects
-            new_env.reset()
+        # If there are new objects OR region changes, use template and copy old positions
+        if added_objects or region_changed_objects:
+            # Get a fresh state object from new env
             new_state_obj = new_env.sim.get_state()
             
-            # Copy qpos and qvel ONLY for objects that exist in BOTH environments
-            copied_count = 0
-            skipped_count = 0
+            # Start with template (contains random placements for new/changed objects)
+            new_state_obj.qpos[:] = template_qpos
+            new_state_obj.qvel[:] = template_qvel
             
-            for obj_name in preserved_objects:
-                # Safety check: ensure object exists in both joint maps
-                if obj_name not in old_joint_map:
-                    skipped_count += 1
-                    continue
-                
-                if obj_name not in new_joint_map:
-                    # This shouldn't happen (obj is in preserved_objects), but be safe
-                    print(f"   ⚠️  WARNING: {obj_name} in preserved set but not in new joint map!")
-                    skipped_count += 1
-                    continue
-                
-                old_qpos_addr, old_qvel_addr, old_qpos_size, old_qvel_size = old_joint_map[obj_name]
-                new_qpos_addr, new_qvel_addr, new_qpos_size, new_qvel_size = new_joint_map[obj_name]
-                
-                # Copy qpos (position + orientation)
-                new_state_obj.qpos[new_qpos_addr:new_qpos_addr+old_qpos_size] = \
-                    old_env.sim.data.qpos[old_qpos_addr:old_qpos_addr+old_qpos_size].copy()
-                
-                # Copy qvel (velocities)
-                new_state_obj.qvel[new_qvel_addr:new_qvel_addr+old_qvel_size] = \
-                    old_env.sim.data.qvel[old_qvel_addr:old_qvel_addr+old_qvel_size].copy()
-                
-                copied_count += 1
-            
-            # Log what was done (only for first state)
-            if i == 0:
-                print(f"   State 0: Copied {copied_count} objects, Skipped {skipped_count}")
+            # Batch copy all preserved objects using pre-computed indices
+            for old_qpos_s, old_qpos_e, new_qpos_s, new_qpos_e, old_qvel_s, old_qvel_e, new_qvel_s, new_qvel_e in copy_plan:
+                new_state_obj.qpos[new_qpos_s:new_qpos_e] = old_env.sim.data.qpos[old_qpos_s:old_qpos_e]
+                new_state_obj.qvel[new_qvel_s:new_qvel_e] = old_env.sim.data.qvel[old_qvel_s:old_qvel_e]
             
             # Set state and forward
             new_env.sim.set_state(new_state_obj)
@@ -359,19 +466,9 @@ def preserve_positions_add_objects(
                 new_env.reset()
                 new_state_obj = new_env.sim.get_state()
                 
-                for obj_name in preserved_objects:
-                    # Safety check: only copy if object exists in both environments
-                    if obj_name not in old_joint_map or obj_name not in new_joint_map:
-                        continue
-                    
-                    old_qpos_addr, old_qvel_addr, old_qpos_size, old_qvel_size = old_joint_map[obj_name]
-                    new_qpos_addr, new_qvel_addr, new_qpos_size, new_qvel_size = new_joint_map[obj_name]
-                    
-                    new_state_obj.qpos[new_qpos_addr:new_qpos_addr+old_qpos_size] = \
-                        old_env.sim.data.qpos[old_qpos_addr:old_qpos_addr+old_qpos_size].copy()
-                    
-                    new_state_obj.qvel[new_qvel_addr:new_qvel_addr+old_qvel_size] = \
-                        old_env.sim.data.qvel[old_qvel_addr:old_qvel_addr+old_qvel_size].copy()
+                for old_qpos_s, old_qpos_e, new_qpos_s, new_qpos_e, old_qvel_s, old_qvel_e, new_qvel_s, new_qvel_e in copy_plan:
+                    new_state_obj.qpos[new_qpos_s:new_qpos_e] = old_env.sim.data.qpos[old_qpos_s:old_qpos_e]
+                    new_state_obj.qvel[new_qvel_s:new_qvel_e] = old_env.sim.data.qvel[old_qvel_s:old_qvel_e]
                 
                 new_env.sim.set_state(new_state_obj)
                 new_env.sim.forward()
@@ -385,7 +482,7 @@ def preserve_positions_add_objects(
     new_states = np.array(new_states)
     
     # Save new init states
-    print(f"\n6. Saving new init states to: {output_init_path}")
+    print(f"\n8. Saving new init states to: {output_init_path}")
     output_path = Path(output_init_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
@@ -410,14 +507,50 @@ def preserve_positions_add_objects(
     new_env.close()
     
     print("\n" + "=" * 80)
-    print(f"✅ S✓ PRESERVED positions for {len(preserved_objects)} objects")
-    if added_objects:
-        print(f"  ➕ NEW random placements for: {sorted(added_objects)}")
-    if removed_objects:
-        print(f"  ➖ REMOVED from scene: {sorted(removed_objects)}")
+    print("✅ SUCCESS!")
+    print("=" * 80)
     print(f"Generated {num_states} init states with:")
-    print(f"  • PRESERVED positions for: {sorted(preserved_objects)}")
-    print(f"  • NEW placements for: {sorted(added_objects)}")
+    print(f"  ✓ PRESERVED positions for {len(preserved_objects)} objects:")
+    if preserved_objects:
+        for mujoco_name in sorted(preserved_objects):
+            # Find BDDL name
+            bddl_name = None
+            for bname, mname in bddl_to_mujoco_mapping.items():
+                if mname == mujoco_name:
+                    bddl_name = bname
+                    break
+            if bddl_name:
+                region = new_placements.get(bddl_name, 'unknown')
+                print(f"      - {bddl_name} (MuJoCo: {mujoco_name}) @ {region}")
+            else:
+                print(f"      - {mujoco_name} @ unknown")
+    
+    if added_objects:
+        print(f"\n  ➕ NEW random placements for {len(added_objects)} objects:")
+        for obj in sorted(added_objects):
+            print(f"      - {obj}")
+    
+    if region_changed_objects:
+        print(f"\n  🔄 NEW random placements for {len(region_changed_objects)} objects (region changed):")
+        for mujoco_name in sorted(region_changed_objects):
+            # Find BDDL name
+            bddl_name = None
+            for bname, mname in bddl_to_mujoco_mapping.items():
+                if mname == mujoco_name:
+                    bddl_name = bname
+                    break
+            if bddl_name:
+                old_region = old_placements.get(bddl_name, 'unknown')
+                new_region = new_placements.get(bddl_name, 'unknown')
+                print(f"      - {bddl_name} (MuJoCo: {mujoco_name}): {old_region} → {new_region}")
+            else:
+                print(f"      - {mujoco_name}")
+    
+    if removed_objects:
+        print(f"\n  ➖ REMOVED from scene ({len(removed_objects)} objects):")
+        for obj in sorted(removed_objects):
+            print(f"      - {obj}")
+    
     print("=" * 80)
     
     # Visualize the first few generated states
