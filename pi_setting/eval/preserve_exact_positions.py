@@ -415,11 +415,18 @@ def preserve_positions_add_objects(
     if added_objects or region_changed_objects:
         print(f"   Creating template for new object placements...")
         new_env.reset()
+        
+        # Settle objects ONCE to get stable random positions for new/changed objects
+        # This matches LiberoEnv.reset() behavior (num_steps_wait=10)
+        dummy_action = np.zeros(7)
+        for _ in range(10):
+            new_env.env.step(dummy_action)
+        
         template_state = new_env.sim.get_state()
-        # Copy the position and velocity arrays
+        # Copy the position and velocity arrays AFTER settling
         template_qpos = template_state.qpos.copy()
         template_qvel = template_state.qvel.copy()
-        print(f"   ✓ Template created (will reuse for all {num_states} states)")
+        print(f"   ✓ Template created with settled positions (will reuse for all {num_states} states)")
     
     # Pre-compute copying indices for efficiency
     copy_plan = []  # [(old_qpos_start, old_qpos_end, new_qpos_start, new_qpos_end, old_qvel_start, old_qvel_end, new_qvel_start, new_qvel_end)]
@@ -464,13 +471,6 @@ def preserve_positions_add_objects(
             # Set state and forward
             new_env.sim.set_state(new_state_obj)
             new_env.sim.forward()
-            
-            # Settle objects with no-op actions (matching LiberoEnv.reset() with num_steps_wait=10)
-            # This ensures objects reach stable positions, preventing floating/intersecting objects
-            dummy_action = np.zeros(7)  # LIBERO uses 7-dim actions (6 DOF + gripper)
-            for _ in range(10):
-                new_env.env.step(dummy_action)
-            
             new_state = new_env.sim.get_state().flatten()
         else:
             # No new objects - just use old state directly if dimensions match
@@ -487,12 +487,6 @@ def preserve_positions_add_objects(
                 
                 new_env.sim.set_state(new_state_obj)
                 new_env.sim.forward()
-                
-                # Settle objects with no-op actions (matching LiberoEnv.reset() with num_steps_wait=10)
-                dummy_action = np.zeros(7)
-                for _ in range(10):
-                    new_env.env.step(dummy_action)
-                
                 new_state = new_env.sim.get_state().flatten()
         
         new_states.append(new_state)
