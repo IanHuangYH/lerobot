@@ -461,18 +461,42 @@ class PaliGemmaWithExpertModel(
             suffix_output = None
             all_attention_weights = None
         elif inputs_embeds[0] is None:
-            suffix_output = self.gemma_expert.model.forward(
-                inputs_embeds=inputs_embeds[1],
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                use_cache=use_cache,
-                adarms_cond=adarms_cond[1] if adarms_cond is not None else None,
-            )
-            suffix_output = suffix_output.last_hidden_state
-            prefix_output = None
-            prefix_past_key_values = None
-            all_attention_weights = None
+            # SUFFIX ONLY (with past_key_values from prefix)
+            # Need to use transformers forward with output_attentions=True
+            if return_attention_weights:
+                suffix_output = self.gemma_expert.model.forward(
+                    inputs_embeds=inputs_embeds[1],
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=use_cache,
+                    adarms_cond=adarms_cond[1] if adarms_cond is not None else None,
+                    output_attentions=True,  # Request attention weights
+                )
+                # Extract attention weights from output
+                suffix_output_hidden = suffix_output.last_hidden_state
+                # suffix_output.attentions is a tuple of (layer_0_att, layer_1_att, ...)
+                if hasattr(suffix_output, 'attentions') and suffix_output.attentions is not None:
+                    all_attention_weights = {i: att for i, att in enumerate(suffix_output.attentions)}
+                else:
+                    all_attention_weights = None
+                prefix_output = None
+                suffix_output = suffix_output_hidden
+                prefix_past_key_values = None
+            else:
+                # Original path without attention collection
+                suffix_output = self.gemma_expert.model.forward(
+                    inputs_embeds=inputs_embeds[1],
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=use_cache,
+                    adarms_cond=adarms_cond[1] if adarms_cond is not None else None,
+                )
+                suffix_output = suffix_output.last_hidden_state
+                prefix_output = None
+                prefix_past_key_values = None
+                all_attention_weights = None
         else:
             models = [self.paligemma.language_model, self.gemma_expert.model]
             num_layers = self.paligemma.config.text_config.num_hidden_layers

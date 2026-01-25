@@ -144,6 +144,26 @@ def rollout(
     if attention_dir is not None and supports_attention:
         policy.model.enable_attention_map_saving()
         logging.info("Attention map saving enabled for this rollout.")
+        
+        # Check if torch.compile might interfere
+        # Note: @torch.no_grad() also adds __wrapped__, so we check the type instead
+        # Compiled methods become 'function' type, while normal methods stay 'method' type
+        is_compiled = (
+            hasattr(policy.model, 'sample_actions') and 
+            type(policy.model.sample_actions).__name__ == 'function'
+        )
+        if is_compiled:
+            logging.error(
+                "❌ ATTENTION SAVING WILL FAIL: torch.compile() is enabled on this policy!\n"
+                "   Compiled models cannot return attention weights.\n"
+                "   \n"
+                "   To fix: Load the policy with compilation disabled:\n"
+                "     1. Set policy.compile_model=false in CLI:\n"
+                "        --policy.compile_model=false\n"
+                "     2. Or modify the policy config before loading\n"
+                "   \n"
+                "   The evaluation will continue but NO attention maps will be saved."
+            )
     elif attention_dir is not None and not supports_attention:
         logging.warning(
             f"Attention map saving requested but policy type '{type(policy).__name__}' does not support it. "
@@ -195,15 +215,19 @@ def rollout(
         action = postprocessor(action)
         
         # Collect attention maps after action selection (if enabled)
+        # Note: select_action() uses an action queue, so predict_action_chunk() is only called
+        # when the queue is empty (every n_action_steps). We only collect attention when new
+        # predictions are made.
         if attention_dir is not None and supports_attention:
             step_attention = policy.model.get_attention_maps()
-            if step_attention:
+            if step_attention:  # Only non-empty when predict_action_chunk was just called
                 # Store with rollout step index
                 all_attention_maps.append({
                     'rollout_step': step,
                     'attention_maps': deepcopy(step_attention),  # Deep copy to avoid overwriting
                 })
-                # Clear for next step
+                logging.debug(f"Collected attention maps at rollout step {step} ({len(step_attention)} denoising steps)")
+                # Clear for next prediction
                 policy.model.clear_attention_maps()
 
         action_transition = {ACTION: action}
@@ -258,26 +282,29 @@ def rollout(
         all_observations.append(deepcopy(observation))
 
     # Save attention maps if enabled and supported
-    if attention_dir is not None and supports_attention and all_attention_maps:
-        # Save one file per episode in the batch
-        attention_dir.mkdir(parents=True, exist_ok=True)
-        for batch_idx in range(env.num_envs):
-            episode_idx = n_episodes_so_far + batch_idx
-            attention_path = attention_dir / f"episode_{episode_idx:05d}_attention.pt"
-            # Save all rollout steps' attention maps for this episode
-            torch.save(
-                {
-                    "episode_index": episode_idx,
-                    "batch_index": batch_index,
-                    "rollout_steps": all_attention_maps,  # List of dicts, one per rollout step
-                    "metadata": {
-                        "num_rollout_steps": len(all_attention_maps),
-                        "num_denoising_steps_per_action": len(all_attention_maps[0]['attention_maps']) if all_attention_maps else 0,
+    if attention_dir is not None and supports_attention:
+        if all_attention_maps:
+            # Save one file per episode in the batch
+            attention_dir.mkdir(parents=True, exist_ok=True)
+            for batch_idx in range(env.num_envs):
+                episode_idx = n_episodes_so_far + batch_idx
+                attention_path = attention_dir / f"episode_{episode_idx:05d}_attention.pt"
+                # Save all rollout steps' attention maps for this episode
+                torch.save(
+                    {
+                        "episode_index": episode_idx,
+                        "batch_index": batch_index,
+                        "rollout_steps": all_attention_maps,  # List of dicts, one per rollout step
+                        "metadata": {
+                            "num_rollout_steps": len(all_attention_maps),
+                            "num_denoising_steps_per_action": len(all_attention_maps[0]['attention_maps']) if all_attention_maps else 0,
+                        },
                     },
-                },
-                attention_path,
-            )
-        logging.info(f"Saved attention maps for {env.num_envs} episodes ({len(all_attention_maps)} rollout steps each) to {attention_dir}")
+                    attention_path,
+                )
+            logging.info(f"Saved attention maps for {env.num_envs} episodes ({len(all_attention_maps)} prediction steps each) to {attention_dir}")
+        else:
+            logging.warning(f"Attention saving was enabled but no attention maps were collected. This may happen if torch.compile() is enabled.")
 
     # Stack the sequence along the first dimension so that we have (batch, sequence, *) tensors.
     ret = {
