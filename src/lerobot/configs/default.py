@@ -56,6 +56,8 @@ class EvalConfig:
     batch_size: int = 50
     # `use_async_envs` specifies whether to use asynchronous environments (multiprocessing).
     use_async_envs: bool = False
+    # Whether to save attention maps during evaluation (only for policies that support it, e.g., PI0.5)
+    save_attention_maps: bool = False
 
     def __post_init__(self) -> None:
         if self.batch_size > self.n_episodes:

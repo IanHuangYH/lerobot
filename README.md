@@ -26,7 +26,7 @@
 
 ## Quick Start
 
-Create docker environment with script in lerobot/pi_env_setting
+Create docker environment with script in lerobot/pi_setting/env_setting
 ```bash
 ./BuildDocker.sh
 ./RunDocker.sh

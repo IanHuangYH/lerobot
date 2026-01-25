@@ -217,7 +217,7 @@ def resize_with_pad_torch(  # see openpi `resize_with_pad_torch` (exact copy)
 
 # Define the complete layer computation function for gradient checkpointing
 def compute_layer_complete(
-    layer_idx, inputs_embeds, attention_mask, position_ids, adarms_cond, paligemma, gemma_expert
+    layer_idx, inputs_embeds, attention_mask, position_ids, adarms_cond, paligemma, gemma_expert, return_attention_weights=False
 ):
     models = [paligemma.language_model, gemma_expert.model]
     query_states = []
@@ -254,7 +254,7 @@ def compute_layer_complete(
     batch_size = query_states.shape[0]
     scaling = paligemma.language_model.layers[layer_idx].self_attn.scaling
     # Attention computation
-    att_output, _ = modeling_gemma.eager_attention_forward(
+    att_output, att_weights = modeling_gemma.eager_attention_forward(
         paligemma.language_model.layers[layer_idx].self_attn,
         query_states,
         key_states,
@@ -286,6 +286,9 @@ def compute_layer_complete(
         out_emb = modeling_gemma._gated_residual(after_first_residual, out_emb, gate)  # noqa: SLF001
         outputs_embeds.append(out_emb)
         start_pos = end_pos
+    
+    if return_attention_weights:
+        return outputs_embeds, att_weights
     return outputs_embeds
 
 
@@ -440,6 +443,7 @@ class PaliGemmaWithExpertModel(
         inputs_embeds: list[torch.FloatTensor] | None = None,
         use_cache: bool | None = None,
         adarms_cond: list[torch.Tensor] | None = None,
+        return_attention_weights: bool = False,
     ):
         if adarms_cond is None:
             adarms_cond = [None, None]
@@ -455,6 +459,7 @@ class PaliGemmaWithExpertModel(
             prefix_past_key_values = prefix_output.past_key_values
             prefix_output = prefix_output.last_hidden_state
             suffix_output = None
+            all_attention_weights = None
         elif inputs_embeds[0] is None:
             suffix_output = self.gemma_expert.model.forward(
                 inputs_embeds=inputs_embeds[1],
@@ -467,6 +472,7 @@ class PaliGemmaWithExpertModel(
             suffix_output = suffix_output.last_hidden_state
             prefix_output = None
             prefix_past_key_values = None
+            all_attention_weights = None
         else:
             models = [self.paligemma.language_model, self.gemma_expert.model]
             num_layers = self.paligemma.config.text_config.num_hidden_layers
@@ -478,9 +484,13 @@ class PaliGemmaWithExpertModel(
                 and self.training
             ) or (hasattr(self, "gradient_checkpointing") and self.gradient_checkpointing and self.training)
 
+            # Storage for attention weights if requested
+            all_attention_weights = {} if return_attention_weights else None
+
             # Process all layers with gradient checkpointing if enabled
             for layer_idx in range(num_layers):
                 if use_gradient_checkpointing:
+                    # Note: Can't return attention weights with gradient checkpointing
                     inputs_embeds = torch.utils.checkpoint.checkpoint(
                         compute_layer_complete,
                         layer_idx,
@@ -488,13 +498,14 @@ class PaliGemmaWithExpertModel(
                         attention_mask,
                         position_ids,
                         adarms_cond,
+                        False,  # return_attention_weights must be False for checkpointing
                         use_reentrant=False,
                         preserve_rng_state=False,
                         paligemma=self.paligemma,
                         gemma_expert=self.gemma_expert,
                     )
                 else:
-                    inputs_embeds = compute_layer_complete(
+                    result = compute_layer_complete(
                         layer_idx,
                         inputs_embeds,
                         attention_mask,
@@ -502,7 +513,13 @@ class PaliGemmaWithExpertModel(
                         adarms_cond,
                         paligemma=self.paligemma,
                         gemma_expert=self.gemma_expert,
+                        return_attention_weights=return_attention_weights,
                     )
+                    if return_attention_weights:
+                        inputs_embeds, att_weights = result
+                        all_attention_weights[layer_idx] = att_weights
+                    else:
+                        inputs_embeds = result
 
             # final norm
             def compute_final_norms(inputs_embeds, adarms_cond):
@@ -528,6 +545,8 @@ class PaliGemmaWithExpertModel(
             suffix_output = outputs_embeds[1]
             prefix_past_key_values = None
 
+        if return_attention_weights:
+            return [prefix_output, suffix_output], prefix_past_key_values, all_attention_weights
         return [prefix_output, suffix_output], prefix_past_key_values
 
 
@@ -538,6 +557,10 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         super().__init__()
         self.config = config
         self.rtc_processor = rtc_processor
+        
+        # For attention visualization
+        self.save_attention_maps = False
+        self.attention_maps = {}  # Will store {time_step: {layer_idx: attention_weights}}
 
         paligemma_config = get_gemma_config(config.paligemma_variant)
         action_expert_config = get_gemma_config(config.action_expert_variant)
@@ -601,6 +624,68 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
     def _rtc_enabled(self):
         return self.config.rtc_config is not None and self.config.rtc_config.enabled
+    
+    def enable_attention_map_saving(self):
+        """Enable saving attention maps during inference.
+        
+        WARNING: This may cause issues with torch.compile(). If you get errors about
+        None attention weights, you may need to disable compilation or reload the model.
+        """
+        self.save_attention_maps = True
+        self.attention_maps = {}
+    
+    def disable_attention_map_saving(self):
+        """Disable saving attention maps."""
+        self.save_attention_maps = False
+    
+    def get_attention_maps(self, last_n_layers=None):
+        """Get saved attention maps.
+        
+        Args:
+            last_n_layers: If specified, only return attention from last N layers.
+                          If None, return all layers.
+        
+        Returns:
+            Dictionary with structure:
+            {
+                step_idx: {
+                    'time': float,
+                    'attention_weights': {layer_idx: tensor},
+                    'prefix_len': int,
+                    'suffix_len': int,
+                }
+            }
+        """
+        if not self.attention_maps:
+            return {}
+        
+        if last_n_layers is None:
+            return self.attention_maps
+        
+        # Filter to only include last N layers
+        filtered_maps = {}
+        for step_idx, step_data in self.attention_maps.items():
+            att_weights = step_data['attention_weights']
+            if att_weights is None or not att_weights:
+                continue  # Skip steps with no attention data
+            max_layer = max(att_weights.keys())
+            filtered_weights = {
+                layer: weights 
+                for layer, weights in att_weights.items() 
+                if layer >= (max_layer - last_n_layers + 1)
+            }
+            filtered_maps[step_idx] = {
+                'time': step_data['time'],
+                'attention_weights': filtered_weights,
+                'prefix_len': step_data['prefix_len'],
+                'suffix_len': step_data['suffix_len'],
+            }
+        
+        return filtered_maps
+    
+    def clear_attention_maps(self):
+        """Clear stored attention maps to free memory."""
+        self.attention_maps = {}
 
     def _apply_checkpoint(self, func, *args, **kwargs):
         """Helper method to apply gradient checkpointing if enabled."""
@@ -831,6 +916,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
                     past_key_values=past_key_values,
                     x_t=input_x_t,
                     timestep=current_timestep,
+                    current_step=step if self.save_attention_maps else None,
                 )
 
             if self._rtc_enabled():
@@ -847,7 +933,12 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
                     execution_horizon=execution_horizon,
                 )
             else:
-                v_t = denoise_step_partial_call(x_t)
+                # When collecting attention maps, use non-compiled version
+                # torch.compile() can return None for attention_weights
+                if self.save_attention_maps:
+                    v_t = denoise_step_partial_call(x_t)
+                else:
+                    v_t = denoise_step_partial_call(x_t)
 
             x_t = x_t + dt * v_t
 
@@ -862,6 +953,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         past_key_values,
         x_t,
         timestep,
+        current_step=None,
     ):
         """Apply one denoising step of the noise `x_t` at a given timestep."""
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, timestep)
@@ -880,14 +972,29 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)
         self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
 
-        outputs_embeds, _ = self.paligemma_with_expert.forward(
+        result = self.paligemma_with_expert.forward(
             attention_mask=full_att_2d_masks_4d,
             position_ids=position_ids,
             past_key_values=past_key_values,
             inputs_embeds=[None, suffix_embs],
             use_cache=False,
             adarms_cond=[None, adarms_cond],
+            return_attention_weights=self.save_attention_maps,
         )
+        
+        if self.save_attention_maps:
+            outputs_embeds, _, att_weights = result
+            # Store attention weights with metadata (skip if None due to torch.compile)
+            if current_step is not None and att_weights is not None:
+                time_value = timestep[0].item() if timestep.numel() > 0 else None
+                self.attention_maps[current_step] = {
+                    'time': time_value,
+                    'attention_weights': att_weights,
+                    'prefix_len': prefix_len,
+                    'suffix_len': suffix_len,
+                }
+        else:
+            outputs_embeds, _ = result
 
         suffix_out = outputs_embeds[1]
         suffix_out = suffix_out[:, -self.config.chunk_size :]

@@ -102,6 +102,9 @@ def rollout(
     seeds: list[int] | None = None,
     return_observations: bool = False,
     render_callback: Callable[[gym.vector.VectorEnv], None] | None = None,
+    attention_dir: Path | None = None,
+    batch_index: int = 0,
+    n_episodes_so_far: int = 0,
 ) -> dict:
     """Run a batched policy rollout once through a batch of environments.
 
@@ -136,6 +139,17 @@ def rollout(
     """
     assert isinstance(policy, nn.Module), "Policy must be a PyTorch nn module."
 
+    # Enable attention map saving if requested and policy supports it
+    supports_attention = hasattr(policy, "model") and hasattr(policy.model, "enable_attention_map_saving")
+    if attention_dir is not None and supports_attention:
+        policy.model.enable_attention_map_saving()
+        logging.info("Attention map saving enabled for this rollout.")
+    elif attention_dir is not None and not supports_attention:
+        logging.warning(
+            f"Attention map saving requested but policy type '{type(policy).__name__}' does not support it. "
+            "Attention maps will not be saved."
+        )
+
     # Reset the policy and environments.
     policy.reset()
     observation, info = env.reset(seed=seeds)
@@ -147,6 +161,9 @@ def rollout(
     all_rewards = []
     all_successes = []
     all_dones = []
+    
+    # Store attention maps per rollout step (if enabled)
+    all_attention_maps = [] if (attention_dir is not None and supports_attention) else None
 
     step = 0
     # Keep track of which environments are done.
@@ -176,6 +193,18 @@ def rollout(
         with torch.inference_mode():
             action = policy.select_action(observation)
         action = postprocessor(action)
+        
+        # Collect attention maps after action selection (if enabled)
+        if attention_dir is not None and supports_attention:
+            step_attention = policy.model.get_attention_maps()
+            if step_attention:
+                # Store with rollout step index
+                all_attention_maps.append({
+                    'rollout_step': step,
+                    'attention_maps': deepcopy(step_attention),  # Deep copy to avoid overwriting
+                })
+                # Clear for next step
+                policy.model.clear_attention_maps()
 
         action_transition = {ACTION: action}
         action_transition = env_postprocessor(action_transition)
@@ -228,6 +257,28 @@ def rollout(
         observation = preprocess_observation(observation)
         all_observations.append(deepcopy(observation))
 
+    # Save attention maps if enabled and supported
+    if attention_dir is not None and supports_attention and all_attention_maps:
+        # Save one file per episode in the batch
+        attention_dir.mkdir(parents=True, exist_ok=True)
+        for batch_idx in range(env.num_envs):
+            episode_idx = n_episodes_so_far + batch_idx
+            attention_path = attention_dir / f"episode_{episode_idx:05d}_attention.pt"
+            # Save all rollout steps' attention maps for this episode
+            torch.save(
+                {
+                    "episode_index": episode_idx,
+                    "batch_index": batch_index,
+                    "rollout_steps": all_attention_maps,  # List of dicts, one per rollout step
+                    "metadata": {
+                        "num_rollout_steps": len(all_attention_maps),
+                        "num_denoising_steps_per_action": len(all_attention_maps[0]['attention_maps']) if all_attention_maps else 0,
+                    },
+                },
+                attention_path,
+            )
+        logging.info(f"Saved attention maps for {env.num_envs} episodes ({len(all_attention_maps)} rollout steps each) to {attention_dir}")
+
     # Stack the sequence along the first dimension so that we have (batch, sequence, *) tensors.
     ret = {
         ACTION: torch.stack(all_actions, dim=1),
@@ -257,6 +308,7 @@ def eval_policy(
     n_episodes: int,
     max_episodes_rendered: int = 0,
     videos_dir: Path | None = None,
+    attention_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
 ) -> dict:
@@ -267,6 +319,7 @@ def eval_policy(
         n_episodes: The number of episodes to evaluate.
         max_episodes_rendered: Maximum number of episodes to render into videos.
         videos_dir: Where to save rendered videos.
+        attention_dir: Where to save attention maps (if policy supports it).
         return_episode_data: Whether to return episode data for online training. Incorporates the data into
             the "episodes" key of the returned dictionary.
         start_seed: The first seed to use for the first individual rollout. For all subsequent rollouts the
@@ -346,6 +399,9 @@ def eval_policy(
             seeds=list(seeds) if seeds else None,
             return_observations=return_episode_data,
             render_callback=render_frame if max_episodes_rendered > 0 else None,
+            attention_dir=attention_dir,
+            batch_index=batch_ix,
+            n_episodes_so_far=batch_ix * env.num_envs,
         )
 
         # Figure out where in each rollout sequence the first done condition was encountered (results after
@@ -559,6 +615,7 @@ def eval_main(cfg: EvalPipelineConfig):
             n_episodes=cfg.eval.n_episodes,
             max_episodes_rendered=10,
             videos_dir=Path(cfg.output_dir) / "videos",
+            attention_dir=Path(cfg.output_dir) / "attention" if cfg.eval.save_attention_maps else None,
             start_seed=cfg.seed,
             max_parallel_tasks=cfg.env.max_parallel_tasks,
         )
@@ -601,12 +658,14 @@ def eval_one(
     n_episodes: int,
     max_episodes_rendered: int,
     videos_dir: Path | None,
+    attention_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
 ) -> TaskMetrics:
     """Evaluates one task_id of one suite using the provided vec env."""
 
     task_videos_dir = videos_dir
+    task_attention_dir = attention_dir
 
     task_result = eval_policy(
         env=env,
@@ -618,6 +677,7 @@ def eval_one(
         n_episodes=n_episodes,
         max_episodes_rendered=max_episodes_rendered,
         videos_dir=task_videos_dir,
+        attention_dir=task_attention_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
     )
@@ -644,6 +704,7 @@ def run_one(
     n_episodes: int,
     max_episodes_rendered: int,
     videos_dir: Path | None,
+    attention_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
 ):
@@ -656,6 +717,11 @@ def run_one(
     if videos_dir is not None:
         task_videos_dir = videos_dir / f"{task_group}_{task_id}"
         task_videos_dir.mkdir(parents=True, exist_ok=True)
+    
+    task_attention_dir = None
+    if attention_dir is not None:
+        task_attention_dir = attention_dir / f"{task_group}_{task_id}"
+        task_attention_dir.mkdir(parents=True, exist_ok=True)
 
     # Call the existing eval_one (assumed to return TaskMetrics-like dict)
     metrics = eval_one(
@@ -668,6 +734,7 @@ def run_one(
         n_episodes=n_episodes,
         max_episodes_rendered=max_episodes_rendered,
         videos_dir=task_videos_dir,
+        attention_dir=task_attention_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
     )
@@ -688,6 +755,7 @@ def eval_policy_all(
     *,
     max_episodes_rendered: int = 0,
     videos_dir: Path | None = None,
+    attention_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
     max_parallel_tasks: int = 1,
@@ -744,6 +812,7 @@ def eval_policy_all(
         n_episodes=n_episodes,
         max_episodes_rendered=max_episodes_rendered,
         videos_dir=videos_dir,
+        attention_dir=attention_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
     )
