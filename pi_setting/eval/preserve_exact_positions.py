@@ -162,12 +162,12 @@ def visualize_init_states(
     init_states = torch.load(init_states_path, weights_only=False)
     print(f"Total states available: {len(init_states)}")
     
-    # Create environment with visualization resolution (matches LiberoEnv defaults)
+    # Create environment with observation resolution (matches LiberoEnv defaults)
     print(f"Creating environment from: {bddl_path}")
     env = OffScreenRenderEnv(
         bddl_file_name=bddl_path,
-        camera_heights=480,  # visualization_height from LiberoEnv
-        camera_widths=640,   # visualization_width from LiberoEnv
+        camera_heights=360,  # observation_height from LiberoEnv (default)
+        camera_widths=360,   # observation_width from LiberoEnv (default)
     )
     
     # Create output directory
@@ -178,9 +178,17 @@ def visualize_init_states(
     num_to_render = min(num_scenes, len(init_states))
     print(f"\nRendering {num_to_render} scenes...")
     
+    # Settle objects after loading each state (matching LiberoEnv.reset() behavior)
+    dummy_action = np.zeros(7)  # LIBERO uses 7-dim actions
+    
     for i in range(num_to_render):
-        # Set state and regenerate observations
-        obs = env.regenerate_obs_from_state(init_states[i])
+        # Set state and let objects settle
+        env.set_init_state(init_states[i])
+        for _ in range(10):  # num_steps_wait=10 from LiberoEnv
+            env.env.step(dummy_action)
+        
+        # Regenerate observations after settling
+        obs = env.env._get_observations()
         
         # Save agentview camera (flip both H and W for visualization, matching LiberoEnv.render())
         agentview = obs.get('agentview_image', obs.get('image', None))
@@ -232,21 +240,21 @@ def preserve_positions_add_objects(
     if num_states is None:
         num_states = len(old_states)
     
-    # Create OLD environment
+    # Create OLD environment (use low resolution for speed - camera doesn't affect physics)
     print(f"\n2. Creating OLD environment from: {old_bddl_path}")
     old_env = OffScreenRenderEnv(
         bddl_file_name=old_bddl_path,
-        camera_heights=128,
+        camera_heights=128,  # Low res for speed (camera doesn't affect physics)
         camera_widths=128,
     )
     old_env.reset()
     print(f"   Old state dimension: {old_env.sim.get_state().flatten().shape}")
     
-    # Create NEW environment
+    # Create NEW environment (use low resolution for speed - camera doesn't affect physics)
     print(f"\n3. Creating NEW environment from: {new_bddl_path}")
     new_env = OffScreenRenderEnv(
         bddl_file_name=new_bddl_path,
-        camera_heights=128,
+        camera_heights=128,  # Low res for speed (camera doesn't affect physics)
         camera_widths=128,
     )
     new_env.reset()
@@ -456,6 +464,13 @@ def preserve_positions_add_objects(
             # Set state and forward
             new_env.sim.set_state(new_state_obj)
             new_env.sim.forward()
+            
+            # Settle objects with no-op actions (matching LiberoEnv.reset() with num_steps_wait=10)
+            # This ensures objects reach stable positions, preventing floating/intersecting objects
+            dummy_action = np.zeros(7)  # LIBERO uses 7-dim actions (6 DOF + gripper)
+            for _ in range(10):
+                new_env.env.step(dummy_action)
+            
             new_state = new_env.sim.get_state().flatten()
         else:
             # No new objects - just use old state directly if dimensions match
@@ -472,6 +487,12 @@ def preserve_positions_add_objects(
                 
                 new_env.sim.set_state(new_state_obj)
                 new_env.sim.forward()
+                
+                # Settle objects with no-op actions (matching LiberoEnv.reset() with num_steps_wait=10)
+                dummy_action = np.zeros(7)
+                for _ in range(10):
+                    new_env.env.step(dummy_action)
+                
                 new_state = new_env.sim.get_state().flatten()
         
         new_states.append(new_state)

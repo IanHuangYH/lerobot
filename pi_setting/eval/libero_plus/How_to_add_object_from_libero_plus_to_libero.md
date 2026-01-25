@@ -68,6 +68,46 @@ Reference the object like any standard LIBERO object:
 
 ---
 
+## ⚠️ IMPORTANT: Class Naming Convention
+
+**Use PascalCase, NOT All-Caps for Acronyms**
+
+The `@register_object` decorator converts class names to snake_case for BDDL registration. This conversion **splits on capital letters**, which causes issues with all-caps acronyms.
+
+### ❌ WRONG:
+```python
+@register_object
+class DVD(LiberoPlusObject):  # Converts to "d_v_d" ❌
+    def __init__(self, name="dvd", ...):
+        super().__init__(name, "dvd", "lggrfa", joints)
+```
+**Result:** `KeyError: 'dvd'` because class registers as `d_v_d` instead of `dvd`
+
+### ✅ CORRECT:
+```python
+@register_object
+class Dvd(LiberoPlusObject):  # Converts to "dvd" ✅
+    def __init__(self, name="dvd", ...):
+        super().__init__(name, "dvd", "lggrfa", joints)
+```
+**Result:** Registers correctly as `dvd`, works in BDDL files
+
+### More Examples:
+
+| Class Name | Registers As | Valid? |
+|------------|-------------|--------|
+| `AlarmClock` | `alarm_clock` | ✅ |
+| `BottleOfOil` | `bottle_of_oil` | ✅ |
+| `Dvd` | `dvd` | ✅ |
+| `UsbDrive` | `usb_drive` | ✅ |
+| `DVD` | `d_v_d` | ❌ |
+| `USB` | `u_s_b` | ❌ |
+| `TVRemote` | `t_v_remote` | ❌ (use `TvRemote`) |
+
+**Rule:** Treat acronyms as regular words in PascalCase (first letter capitalized only).
+
+---
+
 ## Example: alarm_clock Registration
 
 ```python
