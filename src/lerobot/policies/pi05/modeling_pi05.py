@@ -957,12 +957,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
                     execution_horizon=execution_horizon,
                 )
             else:
-                # When collecting attention maps, use non-compiled version
-                # torch.compile() can return None for attention_weights
-                if self.save_attention_maps:
-                    v_t = denoise_step_partial_call(x_t)
-                else:
-                    v_t = denoise_step_partial_call(x_t)
+                v_t = denoise_step_partial_call(x_t)
 
             x_t = x_t + dt * v_t
 
