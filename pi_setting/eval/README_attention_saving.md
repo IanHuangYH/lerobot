@@ -189,19 +189,20 @@ num_denoising_steps = data['metadata']['num_denoising_steps']  # 10
 
 # Access specific rollout step (e.g., 15th action prediction)
 rollout_step_15 = data['rollout_steps'][15]
-step_index = rollout_step_15['rollout_step']  # Should be 15
+step_index = rollout_step_15['rollout_step']  # Should be 15*run_chunk_step
 attention_maps = rollout_step_15['attention_maps']  # All 10 denoising steps
 
 # Access final denoising step (most refined action)
 final_denoise = attention_maps[9]  # t≈0.0
 time_value = final_denoise['time']
-prefix_len = final_denoise['prefix_len']  # e.g., 276
-suffix_len = final_denoise['suffix_len']  # e.g., 7
+prefix_len = final_denoise['prefix_len']  # e.g., 968
+suffix_len = final_denoise['suffix_len']  # e.g., 50
 
 # Get attention from last layer
 layer_17_attention = final_denoise['attention_weights'][17]
-# Shape: (1, 8, 283, 283) = (batch, heads, seq_len, seq_len)
+# Shape: (1, 8, 50, 1018) = (batch, heads, query_len, key_len)
 print(f"Attention shape: {layer_17_attention.shape}")
+
 ```
 
 ### Extracting Action → Visual Attention
