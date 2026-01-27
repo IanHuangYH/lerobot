@@ -381,10 +381,49 @@ python pi_setting/eval/verify_attention_video_alignment.py \
 
 **Coordinate System Handling:**
 
+Understanding the coordinate transformations is crucial for correct visualization. There are **three coordinate spaces**:
+
+1. **RAW CAMERA SPACE**: Original camera output (before any processing)
+2. **MODEL SPACE**: What the model sees after LiberoProcessor preprocessing
+3. **VIDEO SPACE**: What appears in the MP4 file from `render()`
+
+**Attention maps are saved in MODEL SPACE**, so we need transformations to align with VIDEO SPACE.
+
+### Transformation Flow
+
+**Important**: LiberoProcessor and `render()` are **independent operations** that both start from RAW CAMERA!
+
+**AGENTVIEW:**
+```
+                    ┌─ LiberoProcessor [::-1, ::-1] → MODEL SPACE (flipped)
+                    │
+RAW CAMERA (original)
+                    │
+                    └─ render() [::-1, ::-1] → VIDEO SPACE (flipped)
+```
+- LiberoProcessor: Takes raw camera, flips `[::-1, ::-1]` → MODEL sees **FLIPPED**
+- render(): Takes raw camera, flips `[::-1, ::-1]` (line 226) → VIDEO shows **FLIPPED**
+- **Result**: Both apply the SAME transformation to raw camera → ✅ **MODEL = VIDEO, aligned!**
+
+**WRIST:**
+```
+                    ┌─ LiberoProcessor [::-1, ::-1] → MODEL SPACE (flipped)
+                    │
+RAW CAMERA (original)
+                    │
+                    └─ render() (no flip) → VIDEO SPACE (original)
+```
+- LiberoProcessor: Takes raw camera, flips `[::-1, ::-1]` → MODEL sees **FLIPPED**
+- render(): Takes raw camera, does NOT flip (line 232) → VIDEO shows **ORIGINAL**
+- **Result**: Different transformations applied → ❌ **MODEL ≠ VIDEO, need transformation!**
+
+### Summary
+
 | Component | Agentview | Wrist |
 |-----------|-----------|-------|
-| **LiberoProcessor** | Flipped [::-1, ::-1] | Flipped [::-1, ::-1] |
-| **MP4 render()** | Flipped [::-1, ::-1] | NOT flipped |
-| **Transformation needed** | ❌ No | ✅ Yes (auto-applied) |
+| **LiberoProcessor (MODEL)** | Flipped [::-1, ::-1] | Flipped [::-1, ::-1] |
+| **MP4 render() (VIDEO)** | Flipped [::-1, ::-1] | NOT flipped |
+| **Spaces aligned?** | ✅ Yes | ❌ No |
+| **Transformation needed** | ❌ No | ✅ Yes (undo flip) |
 
-Both scripts automatically handle the correct coordinate transformations to align with MP4 video frames!
+**Key takeaway**: Attention maps are in MODEL SPACE. The visualization scripts automatically apply the correct transformations to align with VIDEO SPACE for each camera.
