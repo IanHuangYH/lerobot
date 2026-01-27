@@ -201,6 +201,8 @@ suffix_len = final_denoise['suffix_len']  # e.g., 50
 # Get attention from last layer
 layer_17_attention = final_denoise['attention_weights'][17]
 # Shape: (1, 8, 50, 1018) = (batch, heads, query_len, key_len)
+# action_chunk = 50 (1: time embedding + 49:action component)
+# 1018 = 768 (3 cameras (third person view + wrist view + dummy view) × 256 patches) + 200 (language) + 50 (suffix)
 print(f"Attention shape: {layer_17_attention.shape}")
 
 ```
@@ -353,3 +355,23 @@ python pi_setting/eval/inspect_saved_attention.py \
    - Use `extract_action_to_visual_attention()` for visual influence
    - Use `extract_action_to_language_attention()` for language influence
    - Compare across different tasks/episodes
+
+### Usage
+
+The visualization script now **automatically applies the correct orientation**:
+
+```bash
+# Agentview (camera 0) - no flip needed
+python pi_setting/eval/visualize_action_to_img_attention.py \
+  --attention_file eval_logs/quick_test_object/attention/libero_object_0/episode_00000_attention.pt \
+  --camera_index 0 \
+  --output_dir eval_logs/visualizations/agentview
+
+# Wrist view (camera 1) - auto-flipped to match video
+python pi_setting/eval/visualize_action_to_img_attention.py \
+  --attention_file eval_logs/quick_test_object/attention/libero_object_0/episode_00000_attention.pt \
+  --camera_index 1 \
+  --output_dir eval_logs/visualizations/wrist
+```
+
+The heatmaps will now align perfectly with the MP4 video frames!
