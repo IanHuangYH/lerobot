@@ -334,44 +334,57 @@ python pi_setting/eval/inspect_saved_attention.py \
 3. **Memory intensive**: Loading full episode requires ~3 GB RAM
 4. **Only Pi0.5**: Other policies not supported yet
 
-## Next Steps
+## Visualizing Attention Maps
 
-1. **Run evaluation**:
-   ```bash
-   bash pi_setting/eval/eval_libero_quick_test.sh
-   ```
+### Verifying Alignment with Video
 
-2. **Inspect saved files**:
-   ```bash
-   python pi_setting/eval/inspect_saved_attention.py eval_logs/quick_test_object/attention/
-   ```
-
-3. **Analyze attention patterns**:
-   ```bash
-   python pi_setting/eval/visualize_pi05_attention.py
-   ```
-
-4. **Extract specific patterns**:
-   - Use `extract_action_to_visual_attention()` for visual influence
-   - Use `extract_action_to_language_attention()` for language influence
-   - Compare across different tasks/episodes
-
-### Usage
-
-The visualization script now **automatically applies the correct orientation**:
+The verification script overlays attention heatmaps on video frames to check alignment:
 
 ```bash
-# Agentview (camera 0) - no flip needed
-python pi_setting/eval/visualize_action_to_img_attention.py \
-  --attention_file eval_logs/quick_test_object/attention/libero_object_0/episode_00000_attention.pt \
-  --camera_index 0 \
-  --output_dir eval_logs/visualizations/agentview
+# Quick start - uses default paths
+./pi_setting/eval/run_verify_attention_video_alignment.sh
 
-# Wrist view (camera 1) - auto-flipped to match video
-python pi_setting/eval/visualize_action_to_img_attention.py \
-  --attention_file eval_logs/quick_test_object/attention/libero_object_0/episode_00000_attention.pt \
-  --camera_index 1 \
-  --output_dir eval_logs/visualizations/wrist
+# Or customize:
+python pi_setting/eval/verify_attention_video_alignment.py \
+    --attention_path eval_logs/quick_test_object/attention/libero_object_0/episode_00000_attention.pt \
+    --video_path eval_logs/quick_test_object/videos/libero_object_0/eval_episode_0.mp4 \
+    --output_path eval_logs/quick_test_object/verification \
+    --timesteps 0 5 10 13 \
+    --action_idx 0 \
+    --alpha 0.5  # Transparency (0.0=invisible, 1.0=opaque)
 ```
 
-The heatmaps will now align perfectly with the MP4 video frames!
+**Output format:**
+```
+┌─────────────────────────────────────────────────┐
+│         Camera Name | Timestep | Action         │
+├────────────────────┬────────────────────────────┤
+│                    │                            │
+│  Video + Overlay   │    Pure Attention Map      │
+│  (with alpha=0.5)  │    (no video background)   │
+│                    │                            │
+└────────────────────┴────────────────────────────┘
+```
+
+**Parameters:**
+- `--alpha`: Controls transparency (default: 0.5)
+  - Recommended: 0.4-0.6 for best visibility
+- `--timesteps`: Which rollout steps to visualize
+- `--action_idx`: Which action token to visualize (0-48)
+- `--layer`: Transformer layer (default: 17, last layer)
+- `--denoising_step`: Denoising iteration (default: 9, final step)
+
+**Timestep Alignment:**
+- ✅ `rollout_step = 0` in attention file → Frame 0 in MP4
+- ✅ `rollout_step = 10` in attention file → Frame 10 in MP4
+- Perfectly aligned! No offset needed.
+
+**Coordinate System Handling:**
+
+| Component | Agentview | Wrist |
+|-----------|-----------|-------|
+| **LiberoProcessor** | Flipped [::-1, ::-1] | Flipped [::-1, ::-1] |
+| **MP4 render()** | Flipped [::-1, ::-1] | NOT flipped |
+| **Transformation needed** | ❌ No | ✅ Yes (auto-applied) |
+
+Both scripts automatically handle the correct coordinate transformations to align with MP4 video frames!
