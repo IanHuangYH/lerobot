@@ -76,7 +76,7 @@ def extract_action_to_img_attention(
     Extract attention from a specific action token to image patches of a specific camera.
     
     Args:
-        attention_weights: [1, 8, 50, 1018] or [8, 50, 1018]
+        attention_weights: [B, 8, 50, 1018] or [8, 50, 1018] (B can be batch_size, not just 1)
         action_idx: Which action timestep (0-48)
         camera_index: Which camera (0=agentview, 1=wrist, 2=empty)
         num_img_patches: Patches per camera (256 for 16x16 grid)
@@ -86,9 +86,10 @@ def extract_action_to_img_attention(
     Returns:
         2D attention map of shape [16, 16]
     """
-    # Remove batch dim if present
+    # Handle batch dimension if present
     if attention_weights.dim() == 4:
-        attention_weights = attention_weights.squeeze(0)  # [8, 50, 1018]
+        # Take first sample from batch: [B, 8, 50, 1018] -> [8, 50, 1018]
+        attention_weights = attention_weights[0]
     
     # Calculate patch range for this camera
     start_idx = camera_index * num_img_patches

@@ -92,6 +92,49 @@ from lerobot.utils.utils import (
 )
 
 
+def _extract_batch_sample_from_attention_maps(all_attention_maps: list, batch_idx: int) -> list:
+    """Extract a single batch sample from attention maps.
+    
+    Args:
+        all_attention_maps: List of rollout step dictionaries, each containing attention maps
+                           with batch dimension in tensors
+        batch_idx: Which batch sample to extract (0 to batch_size-1)
+    
+    Returns:
+        New list with same structure but tensors sliced to only contain batch_idx sample
+    """
+    extracted_maps = []
+    for rollout_step_data in all_attention_maps:
+        extracted_step = {
+            'rollout_step': rollout_step_data['rollout_step'],
+            'attention_maps': {}
+        }
+        
+        # Process each denoising step
+        for denoising_step, denoising_data in rollout_step_data['attention_maps'].items():
+            extracted_denoising = {
+                'time': denoising_data['time'],
+                'prefix_len': denoising_data['prefix_len'],
+                'suffix_len': denoising_data['suffix_len'],
+                'attention_weights': {}
+            }
+            
+            # Extract batch_idx from each layer's attention weights
+            for layer, weights in denoising_data['attention_weights'].items():
+                # weights shape: [B, heads, tokens, attended]
+                if weights.dim() == 4:
+                    extracted_denoising['attention_weights'][layer] = weights[batch_idx:batch_idx+1]
+                else:
+                    # Shouldn't happen, but keep as-is if unexpected shape
+                    extracted_denoising['attention_weights'][layer] = weights
+            
+            extracted_step['attention_maps'][denoising_step] = extracted_denoising
+        
+        extracted_maps.append(extracted_step)
+    
+    return extracted_maps
+
+
 def rollout(
     env: gym.vector.VectorEnv,
     policy: PreTrainedPolicy,
@@ -289,15 +332,19 @@ def rollout(
             for batch_idx in range(env.num_envs):
                 episode_idx = n_episodes_so_far + batch_idx
                 attention_path = attention_dir / f"episode_{episode_idx:05d}_attention.pt"
+                
+                # Extract only this batch sample's attention maps
+                episode_attention_maps = _extract_batch_sample_from_attention_maps(all_attention_maps, batch_idx)
+                
                 # Save all rollout steps' attention maps for this episode
                 torch.save(
                     {
                         "episode_index": episode_idx,
-                        "batch_index": batch_index,
-                        "rollout_steps": all_attention_maps,  # List of dicts, one per rollout step
+                        "batch_index": batch_idx,
+                        "rollout_steps": episode_attention_maps,  # Only this episode's data
                         "metadata": {
-                            "num_rollout_steps": len(all_attention_maps),
-                            "num_denoising_steps_per_action": len(all_attention_maps[0]['attention_maps']) if all_attention_maps else 0,
+                            "num_rollout_steps": len(episode_attention_maps),
+                            "num_denoising_steps_per_action": len(episode_attention_maps[0]['attention_maps']) if episode_attention_maps else 0,
                         },
                     },
                     attention_path,
