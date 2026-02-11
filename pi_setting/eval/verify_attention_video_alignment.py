@@ -365,6 +365,12 @@ def main():
         default=0.5,
         help="Transparency for attention overlay (0.0=invisible, 1.0=opaque, default: 0.5)"
     )
+    parser.add_argument(
+        "--episode_id",
+        type=int,
+        default=None,
+        help="Episode ID to create a subfolder (e.g., 0 creates 'episode_00000' subfolder)"
+    )
     
     args = parser.parse_args()
     
@@ -377,6 +383,11 @@ def main():
         raise FileNotFoundError(f"Attention file not found: {attention_path}")
     if not video_path.exists():
         raise FileNotFoundError(f"Video file not found: {video_path}")
+    
+    # Create episode-specific subfolder if episode_id is provided
+    if args.episode_id is not None:
+        episode_folder = f"episode_{args.episode_id:05d}"
+        output_path = output_path / episode_folder
     
     # Create output directory
     output_path.mkdir(parents=True, exist_ok=True)
