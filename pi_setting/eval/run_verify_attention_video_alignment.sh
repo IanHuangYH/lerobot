@@ -4,7 +4,7 @@
 # This creates side-by-side visualizations for multiple timesteps
 
 # Default paths (modify as needed)
-EVAL_FOLDER="object_same_scene_random_init"
+EVAL_FOLDER="object_0_variants"
 EVAL_SCENE_INDEX=9  # Which evaluation run to use (0-9, default: 0 = first run)
 EVAL_TASK_AMOUNT=10  # How many tasks to verify (default: 10, set to 1 for quick test)
 
@@ -12,7 +12,7 @@ for i in $(seq 0 $EVAL_SCENE_INDEX); do
     for j in $(seq 0 $EVAL_TASK_AMOUNT); do
         TASK_FOLDER="libero_object_$i"
         ATTENTION_FILE="eval_logs/$EVAL_FOLDER/attention/$TASK_FOLDER/episode_$(printf "%05d" $j)_attention.pt"
-        VIDEO_FILE="eval_logs/$EVAL_FOLDER/videos/$TASK_FOLDER/eval_episode_$(printf "%01d" $j).mp4"
+        VIDEO_FILE="eval_logs/$EVAL_FOLDER/videos/$TASK_FOLDER/eval_episode_$(printf "%05d" $j).mp4"
         OUTPUT_DIR="eval_logs/$EVAL_FOLDER/attention/$TASK_FOLDER/verification"
 
         # Default parameters
