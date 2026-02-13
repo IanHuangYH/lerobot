@@ -1,4 +1,46 @@
 #!/bin/bash
+# =============================================================================
+# LIBERO Scene Variant Generation Script
+# =============================================================================
+#
+# PURPOSE:
+#   Generate multiple scene variants for LIBERO tasks by swapping object positions.
+#   Each variant maintains the same task definition but changes WHERE objects are placed.
+#
+# WHAT IT DOES:
+#   1. For each task in TASK_LIST:
+#      - Creates variant BDDL files with swapped object→region assignments
+#      - Regenerates init states (object positions/velocities) for each variant
+#      - Visualizes each variant scene
+#
+#   2. Three types of variants are generated:
+#      a) N_TARGET_OBJECT variants: Swap the PICKUP target with non-interest objects
+#         (e.g., alphabet_soup ↔ butter, so robot must pick up butter instead)
+#      
+#      b) N_TARGET_LOCATION variants: Swap the PLACE target with non-interest objects
+#         (e.g., basket ↔ plate, so robot must place in plate instead)
+#      
+#      c) N_BOTH_OBJECT_TARGET variants: Swap BOTH pickup and place targets
+#         (e.g., alphabet_soup ↔ butter AND basket ↔ plate)
+#
+#   3. Creates variant_0 as copy of original scene (no changes)
+#
+# OUTPUT FILES:
+#   - BDDL files: /path/to/bddl_files/{task_name}_0.bddl, {task_name}_1.bddl, ...
+#   - Init files: /path/to/init_files/{task_name}_0.init, {task_name}_1.init, ...
+#   - Visualizations: /path/to/init_files/variant_visualizations/{task}/variant_XXX.png
+#
+# DETERMINISTIC MODE:
+#   - Set DETERMINISTIC=true for reproducible init states (same scenes every run)
+#   - Set DETERMINISTIC=false for random variations (different placements each run)
+#
+# EXAMPLE:
+#   Original task: "pick_up_the_alphabet_soup_and_place_it_in_the_basket"
+#   Variant 1: alphabet_soup at butter's location → robot picks up from different spot
+#   Variant 2: basket at plate's location → robot places at different spot
+#   Variant 3: both swapped → completely different scene layout
+#
+# =============================================================================
 
 DETERMINISTIC=true    # Set to true for reproducible init states (same scenes every run)
 

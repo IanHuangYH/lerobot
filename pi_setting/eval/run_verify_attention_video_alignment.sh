@@ -1,10 +1,61 @@
 #!/bin/bash
+# =============================================================================
+# Attention Map & Video Alignment Verification Script
+# =============================================================================
+#
+# PURPOSE:
+#   Verify that saved attention heatmaps correctly align with video frames from
+#   policy evaluation. Creates side-by-side visualizations for debugging and analysis.
+#
+# WHAT IT DOES:
+#   1. Reads attention maps (.pt files) from evaluation runs
+#   2. Reads corresponding video frames (.mp4 files)
+#   3. For each specified timestep:
+#      - Extracts attention heatmap for specific layer/denoising step/action
+#      - Overlays heatmap on video frame with transparency
+#      - Saves 4 images per timestep:
+#        * agentview overlay (attention + video)
+#        * agentview pure heatmap (attention only)
+#        * wrist overlay (attention + video)
+#        * wrist pure heatmap (attention only)
+#
+# USE CASES:
+#   - Verify attention maps are correctly synchronized with video frames
+#   - Analyze which image regions the policy focuses on during execution
+#   - Debug attention mechanism behavior across different camera views
+#   - Compare attention patterns across different tasks/variants
+#
+# OUTPUT STRUCTURE:
+#   eval_logs/{EVAL_FOLDER}/attention/{TASK_FOLDER}/verification/episode_{N}/
+#   ├── timestep_000_agentview_overlay.png
+#   ├── timestep_000_agentview_heatmap.png
+#   ├── timestep_000_wrist_overlay.png
+#   ├── timestep_000_wrist_heatmap.png
+#   ├── timestep_010_agentview_overlay.png
+#   └── ...
+#
+# CONFIGURATION:
+#   - EVAL_FOLDER: Which evaluation run to verify (e.g., "scene_variants_eval")
+#   - EVAL_SCENE_INDEX: Max task ID to process (0-9, checks all variants per task)
+#   - EVAL_TASK_AMOUNT: Max episode/variant to process per task
+#   - TIMESTEPS: Which rollout steps to visualize (e.g., "0 10 20 30")
+#   - LAYER: Which transformer layer's attention to visualize (0-17, default: 17 = last)
+#   - DENOISING_STEP: Which diffusion step (0-9, default: 0 = final denoised)
+#   - ACTION_IDX: Which action dimension to visualize (0-48)
+#
+# EXAMPLE:
+#   Verifying task 0, episode 3 at timesteps 0, 50, 100:
+#   - Loads: eval_logs/scene_variants_eval/attention/libero_object_0/episode_00003_attention.pt
+#   - Loads: eval_logs/scene_variants_eval/videos/libero_object_0/eval_episode_00003.mp4
+#   - Saves: verification/episode_00003/timestep_000_*.png, timestep_050_*.png, timestep_100_*.png
+#
+# =============================================================================
 
 # Verification script to check alignment between attention heatmaps and MP4 video frames
 # This creates side-by-side visualizations for multiple timesteps
 
 # Default paths (modify as needed)
-EVAL_FOLDER="object_0_variants"
+EVAL_FOLDER="scene_variants_eval"
 EVAL_SCENE_INDEX=9  # Which evaluation run to use (0-9, default: 0 = first run)
 EVAL_TASK_AMOUNT=10  # How many tasks to verify (default: 10, set to 1 for quick test)
 

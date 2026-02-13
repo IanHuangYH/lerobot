@@ -1,7 +1,38 @@
 #!/bin/bash
 # Evaluate a policy on LIBERO scene variants.
-# This script evaluates each scene variant (e.g., basket in different positions)
-# and saves results in separate folders per variant.
+#
+# This script evaluates scene variants (different object layouts) for multiple tasks.
+#
+# FOLDER STRUCTURE:
+#   eval_logs/OUTPUTS_DIR/                          <- All results (Level 1)
+#   ├── eval_info.json                              <- Summary of all tasks
+#   ├── attention/
+#   │   ├── libero_object_0/                        <- Task ID 0 (Level 2)
+#   │   │   ├── episode_00000_attention.pt          <- Variant 0 (Level 3)
+#   │   │   ├── episode_00001_attention.pt          <- Variant 1
+#   │   │   └── episode_00002_attention.pt          <- Variant 2
+#   │   ├── libero_object_1/                        <- Task ID 1
+#   │   │   └── episode_00000_attention.pt
+#   │   └── ...
+#   └── videos/
+#       ├── libero_object_0/
+#       │   ├── eval_episode_00000.mp4
+#       │   ├── eval_episode_00001.mp4
+#       │   └── eval_episode_00002.mp4
+#       ├── libero_object_1/
+#       │   └── eval_episode_00000.mp4
+#       └── ...
+#
+# HOW IT WORKS:
+#   1. For each task_id, discovers the task name from LIBERO's benchmark API
+#   2. Finds all variant BDDL files (task_name_0.bddl, task_name_1.bddl, etc.)
+#   3. For each variant:
+#      - Temporarily swaps variant files to base location
+#      - Runs lerobot-eval with n_episodes=1
+#      - Renames episode_00000 → episode_{N} 
+#      - Moves results to final location under OUTPUTS_DIR
+#      - Restores original files
+#   4. Merges all eval_info.json results into single file
 
 # ============================================================================
 # CONFIGURATION
@@ -22,7 +53,7 @@ declare -A TASK_NAME_OVERRIDE=(
 
 EPISODE=7  # Maximum number of scene variants to evaluate per task (will be capped by available variants)
 
-OUTPUTS_DIR=./eval_logs
+OUTPUTS_DIR=./eval_logs/scene_variants_eval  # Main output directory (all tasks go here)
 POLICY_PATH=lerobot/pi05_libero_finetuned
 N_ACTION_STEPS=10
 COMPILE_MODEL=false
