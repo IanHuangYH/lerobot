@@ -1,5 +1,8 @@
 #!/bin/bash
 
+DETERMINISTIC=true    # Set to true for reproducible init states (same scenes every run)
+
+
 # Configuration
 GROUP=libero_object
 
@@ -31,16 +34,15 @@ for TASK in "${TASK_LIST[@]}"; do
 
     BDDL_FILE=$BDDL_DIR/$TASK.bddl
     INIT_FILE=$INIT_DIR/$TASK.init
-
-    # copy the original init file as the first variant (with no changes) and generate new init files for the variants
-    cp $INIT_FILE $INIT_DIR/${TASK}_0.init
-    cp $INIT_FILE $INIT_DIR/${TASK}_0.pruned_init
-    cp $BDDL_FILE $BDDL_DIR/${TASK}_0.bddl
-
-    # Output directory for visualizations (optional)
     OUTPUT_VIS_DIR=$INIT_DIR/variant_visualizations/$TASK
 
-    # Run the scene variant generation
+    # Build deterministic flag
+    DETERMINISTIC_FLAG=""
+    if [ "$DETERMINISTIC" = "true" ]; then
+        DETERMINISTIC_FLAG="--deterministic"
+    fi
+
+    # Run the scene variant generation (will create variant_0 and visualize all variants)
     cd /workspace/lerobot/pi_setting/eval && python3 generate_scene_variants.py \
         --bddl $BDDL_FILE \
         --init $INIT_FILE \
@@ -48,7 +50,9 @@ for TASK in "${TASK_LIST[@]}"; do
         --n_target_location $N_TARGET_LOCATION \
         --n_both_object_target $N_BOTH_OBJECT_TARGET \
         --num_init_states $NUM_INIT_STATES \
-        --output_dir $OUTPUT_VIS_DIR
+        --output_dir $OUTPUT_VIS_DIR \
+        --create_variant_0 \
+        $DETERMINISTIC_FLAG
 done
 
 

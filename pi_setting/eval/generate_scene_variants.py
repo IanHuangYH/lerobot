@@ -113,7 +113,7 @@ def create_variant_bddl(original_bddl_path, output_bddl_path, object_swaps):
     print(f"   Created variant BDDL: {Path(output_bddl_path).name}")
 
 
-def regenerate_init_states(variant_bddl_path, num_states=10):
+def regenerate_init_states(variant_bddl_path, num_states=10, deterministic=False, base_seed=42):
     """
     Regenerate init states by resetting environment multiple times.
     
@@ -123,10 +123,18 @@ def regenerate_init_states(variant_bddl_path, num_states=10):
     Args:
         variant_bddl_path: Path to variant BDDL file
         num_states: Number of init states to generate (default: 10 for speed)
+        deterministic: If True, use fixed random seeds for reproducibility (default: False)
+        base_seed: Base seed for deterministic generation (default: 42)
     
     Returns:
         numpy array of init states (num_states, state_dim)
     """
+    # Set deterministic seeds if requested
+    if deterministic:
+        import random
+        np.random.seed(base_seed)
+        random.seed(base_seed)
+    
     # Create environment with the variant BDDL
     env = OffScreenRenderEnv(
         bddl_file_name=variant_bddl_path,
@@ -134,11 +142,22 @@ def regenerate_init_states(variant_bddl_path, num_states=10):
         camera_widths=128,
     )
     
+    # Seed the environment if deterministic
+    if deterministic and hasattr(env, 'seed'):
+        env.seed(base_seed)
+    
     # Generate init states by resetting
     init_states = []
     dummy_action = np.zeros(7)
     
     for i in range(num_states):
+        # Set seed for this specific state if deterministic
+        if deterministic:
+            state_seed = base_seed + i
+            np.random.seed(state_seed)
+            if hasattr(env, 'seed'):
+                env.seed(state_seed)
+        
         # Reset environment (generates random placement within regions)
         env.reset()
         
@@ -250,7 +269,9 @@ def generate_scene_variants(
     n_target_location,
     n_both_object_target,
     output_dir=None,
-    num_init_states=10
+    num_init_states=10,
+    create_variant_0=True,
+    deterministic=False
 ):
     """
     Generate scene variants by swapping object positions.
@@ -263,6 +284,8 @@ def generate_scene_variants(
         n_both_object_target: Number of variants swapping both
         output_dir: Directory for visualizations (default: same as bddl_path)
         num_init_states: Number of init states per variant (default: 10 for speed)
+        create_variant_0: Create variant_0 as copy of original (default: True)
+        deterministic: If True, use fixed random seeds for reproducibility (default: False)
     """
     print("=" * 80)
     print("GENERATING SCENE VARIANTS")
@@ -338,6 +361,22 @@ def generate_scene_variants(
     
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # Create variant_0 (copy of original) if requested
+    if create_variant_0:
+        print(f"\n4. Creating variant_0 (original scene)")
+        variant_0_bddl = bddl_dir / f"{base_name}_0.bddl"
+        variant_0_init = init_dir / f"{base_name}_0.init"
+        variant_0_pruned = init_dir / f"{base_name}_0.pruned_init"
+        
+        import shutil
+        shutil.copy2(bddl_path, variant_0_bddl)
+        shutil.copy2(init_path, variant_0_init)
+        shutil.copy2(init_path, variant_0_pruned)
+        
+        print(f"   Created: {variant_0_bddl.name}")
+        print(f"   Created: {variant_0_init.name}")
+        print(f"   Created: {variant_0_pruned.name}")
+    
     variant_idx = 1
     all_variants = []
     
@@ -347,7 +386,7 @@ def generate_scene_variants(
     used_pairs_in_both = set()
     
     # Generate variants for n_target_object (swap pickup target)
-    print(f"\n4. Generating {n_target_object} variants: swapping pickup target")
+    print(f"\n5. Generating {n_target_object} variants: swapping pickup target")
     for i in range(n_target_object):
         # Select non-interest object not used in this group
         available = [obj for obj in non_interest if obj not in used_in_target_object]
@@ -371,7 +410,12 @@ def generate_scene_variants(
         
         # Regenerate init states (safer than swapping, handles different object sizes)
         print(f"   Generating {len(init_states)} init states for variant {variant_idx}...")
-        variant_init_states = regenerate_init_states(str(variant_bddl_path), num_states=num_init_states)
+        variant_init_states = regenerate_init_states(
+            str(variant_bddl_path), 
+            num_states=num_init_states,
+            deterministic=deterministic,
+            base_seed=100 + variant_idx  # Different seed per variant
+        )
         
         variant_init_path = init_dir / f"{base_name}_{variant_idx}.init"
         torch.save(variant_init_states, variant_init_path)
@@ -393,7 +437,7 @@ def generate_scene_variants(
         variant_idx += 1
     
     # Generate variants for n_target_location (swap place target)
-    print(f"\n5. Generating {n_target_location} variants: swapping place target")
+    print(f"\n6. Generating {n_target_location} variants: swapping place target")
     for i in range(n_target_location):
         # Select non-interest object not used in this group
         # Sort by region size (largest first) to prioritize visible regions for basket
@@ -422,7 +466,12 @@ def generate_scene_variants(
         
         # Regenerate init states (safer than swapping, handles different object sizes)
         print(f"   Generating {num_init_states} init states for variant {variant_idx}...")
-        variant_init_states = regenerate_init_states(str(variant_bddl_path), num_states=num_init_states)
+        variant_init_states = regenerate_init_states(
+            str(variant_bddl_path), 
+            num_states=num_init_states,
+            deterministic=deterministic,
+            base_seed=100 + variant_idx  # Different seed per variant
+        )
         
         variant_init_path = init_dir / f"{base_name}_{variant_idx}.init"
         torch.save(variant_init_states, variant_init_path)
@@ -443,7 +492,7 @@ def generate_scene_variants(
         variant_idx += 1
     
     # Generate variants for n_both_object_target (swap both)
-    print(f"\n6. Generating {n_both_object_target} variants: swapping both targets")
+    print(f"\n7. Generating {n_both_object_target} variants: swapping both targets")
     for i in range(n_both_object_target):
         # Select two non-interest objects (pairs must be unique)
         # Sort by region size to prioritize larger regions for basket (swap_obj2)
@@ -492,7 +541,12 @@ def generate_scene_variants(
         
         # Regenerate init states (safer than swapping, handles different object sizes)
         print(f"   Generating {num_init_states} init states for variant {variant_idx}...")
-        variant_init_states = regenerate_init_states(str(variant_bddl_path), num_states=num_init_states)
+        variant_init_states = regenerate_init_states(
+            str(variant_bddl_path), 
+            num_states=num_init_states,
+            deterministic=deterministic,
+            base_seed=100 + variant_idx  # Different seed per variant
+        )
         
         variant_init_path = init_dir / f"{base_name}_{variant_idx}.init"
         torch.save(variant_init_states, variant_init_path)
@@ -514,8 +568,23 @@ def generate_scene_variants(
     
     env.close()
     
-    # Visualize all variants
-    print(f"\n7. Visualizing {len(all_variants)} variants...")
+    # Visualize all variants (including variant_0 if created)
+    total_to_visualize = len(all_variants) + (1 if create_variant_0 else 0)
+    print(f"\n8. Visualizing {total_to_visualize} variants...")
+    
+    # Visualize variant_0 first if it was created
+    if create_variant_0:
+        variant_0_bddl = bddl_dir / f"{base_name}_0.bddl"
+        variant_0_init = init_dir / f"{base_name}_0.init"
+        visualize_variant(
+            str(variant_0_bddl),
+            str(variant_0_init),
+            str(output_dir),
+            0
+        )
+        print(f"   ✓ Variant 0: original scene")
+    
+    # Visualize generated variants
     for variant in all_variants:
         visualize_variant(
             str(variant['bddl']),
@@ -532,6 +601,7 @@ def generate_scene_variants(
     print(f"  • {n_target_object} variants: swapping pickup target")
     print(f"  • {n_target_location} variants: swapping place target")
     print(f"  • {n_both_object_target} variants: swapping both targets")
+    print(f"  • Deterministic: {'Yes' if deterministic else 'No (random each run)'}")
     print(f"\nFiles saved to:")
     print(f"  BDDL: {bddl_dir}")
     print(f"  Init: {init_dir}")
@@ -559,6 +629,12 @@ if __name__ == "__main__":
                        help="Number of init states per variant (default: 10, use 50 for full dataset)")
     parser.add_argument("--output_dir", type=str, default=None,
                        help="Directory for visualizations (optional)")
+    parser.add_argument("--create_variant_0", action="store_true", default=True,
+                       help="Create variant_0 as copy of original (default: True)")
+    parser.add_argument("--no_variant_0", action="store_false", dest="create_variant_0",
+                       help="Don't create variant_0")
+    parser.add_argument("--deterministic", action="store_true", default=False,
+                       help="Use fixed random seeds for reproducible init states (default: False)")
     
     args = parser.parse_args()
     
@@ -569,5 +645,7 @@ if __name__ == "__main__":
         args.n_target_location,
         args.n_both_object_target,
         args.output_dir,
-        args.num_init_states
+        args.num_init_states,
+        args.create_variant_0,
+        args.deterministic
     )
