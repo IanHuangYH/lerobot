@@ -219,22 +219,18 @@ def run_evaluation_for_variant(
                             updated_paths = []
                             for path in task['metrics']['video_paths']:
                                 # Convert from temp path to final path
-                                path_obj = Path(path)
-                                if path_obj.exists():
-                                    new_filename = f"eval_episode_{episode_number}.mp4"
-                                    new_path = f"{variants_dir.name}/videos/{task_key}/{new_filename}"
-                                    updated_paths.append(new_path)
+                                new_filename = f"eval_episode_{episode_number}.mp4"
+                                new_path = f"videos/{task_key}/{new_filename}"
+                                updated_paths.append(new_path)
                             task['metrics']['video_paths'] = updated_paths
             
             # Update overall video paths
             if 'overall' in temp_info and 'video_paths' in temp_info['overall']:
                 updated_paths = []
                 for path in temp_info['overall']['video_paths']:
-                    path_obj = Path(path)
-                    if path_obj.exists():
-                        new_filename = f"eval_episode_{episode_number}.mp4"
-                        new_path = f"{variants_dir.name}/videos/{task_key}/{new_filename}"
-                        updated_paths.append(new_path)
+                    new_filename = f"eval_episode_{episode_number}.mp4"
+                    new_path = f"videos/{task_key}/{new_filename}"
+                    updated_paths.append(new_path)
                 temp_info['overall']['video_paths'] = updated_paths
             
             # Update per_group video paths
@@ -243,13 +239,11 @@ def run_evaluation_for_variant(
                     if 'video_paths' in group_data:
                         updated_paths = []
                         for path in group_data['video_paths']:
-                            path_obj = Path(path)
-                            if path_obj.exists():
-                                new_filename = f"eval_episode_{episode_number}.mp4"
-                                new_path = f"{variants_dir.name}/videos/{task_key}/{new_filename}"
-                                updated_paths.append(new_path)
+                            new_filename = f"eval_episode_{episode_number}.mp4"
+                            new_path = f"videos/{task_key}/{new_filename}"
+                            updated_paths.append(new_path)
                         group_data['video_paths'] = updated_paths
-            
+        
             # Merge with existing eval_info if it exists
             if final_eval_info.exists():
                 with open(final_eval_info, 'r') as f:
@@ -364,7 +358,7 @@ def main():
     parser.add_argument("--compile_model", type=str, default="false", help="Compile model")
     parser.add_argument("--use_init_states", type=str, default="true", help="Use init states")
     parser.add_argument("--save_attention_maps", type=str, default="true", help="Save attention maps")
-    parser.add_argument("--output_dir", type=str, required=True, help="Base output directory")
+    parser.add_argument("--output_dir", type=str, required=True, help="Base output directory (all tasks)")
     parser.add_argument("--bddl_dir", type=str, required=True, help="Directory containing BDDL files")
     parser.add_argument("--init_dir", type=str, required=True, help="Directory containing init files")
     
@@ -383,14 +377,17 @@ def main():
     init_dir = Path(args.init_dir)
     base_output_dir = Path(args.output_dir)
     
-    # Create variants directory: {base_output_dir}/{task_suite}_{task_id}_variants/
-    variants_dir = base_output_dir / f"{args.task_suite.replace('libero_', '')}_{args.task_id}_variants"
-    variants_dir.mkdir(parents=True, exist_ok=True)
+    # Create main output directory (shared by all tasks)
+    # Structure: output_dir/attention/libero_object_{task_id}/episode_*.pt
+    #            output_dir/videos/libero_object_{task_id}/eval_episode_*.mp4
+    #            output_dir/eval_info.json (merged across all tasks)
+    base_output_dir.mkdir(parents=True, exist_ok=True)
     
     # Find all variant files
     print(f"\n{'='*80}")
     print(f"FINDING SCENE VARIANTS")
     print(f"{'='*80}")
+    print(f"Task ID: {args.task_id}")
     print(f"Task: {args.task_name}")
     print(f"BDDL dir: {bddl_dir}")
     print(f"Init dir: {init_dir}")
@@ -399,7 +396,7 @@ def main():
     
     if not variants:
         print(f"\nError: No variant files found for task '{args.task_name}'")
-        print(f"Expected files like: {args.task_name}_1.bddl, {args.task_name}_2.bddl, etc.")
+        print(f"Expected files like: {args.task_name}_0.bddl, {args.task_name}_1.bddl, etc.")
         sys.exit(1)
     
     print(f"\nFound {len(variants)} variants:")
@@ -409,6 +406,7 @@ def main():
     # Limit to max_episodes
     n_episodes = min(args.max_episodes, len(variants))
     print(f"\nEvaluating {n_episodes} variants (max_episodes={args.max_episodes})")
+    print(f"Output directory: {base_output_dir}")
     
     # Base file paths (where lerobot-eval expects files)
     base_bddl_path = bddl_dir / f"{args.task_name}.bddl"
@@ -444,7 +442,7 @@ def main():
             base_bddl_path=base_bddl_path,
             base_init_path=base_init_path,
             base_pruned_init_path=base_pruned_init_path,
-            variants_dir=variants_dir,
+            variants_dir=base_output_dir,  # Use base_output_dir instead of task-specific dir
             eval_config=eval_config,
             episode_number=i,  # Episode number matches variant index in evaluation
         )
@@ -456,13 +454,17 @@ def main():
     
     # Summary
     print(f"\n{'='*80}")
-    print(f"EVALUATION COMPLETE")
+    print(f"EVALUATION COMPLETE FOR TASK {args.task_id}")
     print(f"{'='*80}")
+    print(f"Task: {args.task_name}")
     print(f"Total variants: {len(variants)}")
     print(f"Evaluated: {n_episodes}")
     print(f"Successful: {successful}")
     print(f"Failed: {failed}")
-    print(f"\nResults saved in: {variants_dir}")
+    print(f"\nResults saved in: {base_output_dir}")
+    print(f"  - Attention maps: {base_output_dir}/attention/libero_{args.task_suite.replace('libero_', '')}_{args.task_id}/")
+    print(f"  - Videos: {base_output_dir}/videos/libero_{args.task_suite.replace('libero_', '')}_{args.task_id}/")
+    print(f"  - Summary: {base_output_dir}/eval_info.json")
     print(f"{'='*80}\n")
 
 
