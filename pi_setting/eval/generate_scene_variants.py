@@ -129,18 +129,36 @@ def regenerate_init_states(variant_bddl_path, num_states=10, deterministic=False
     Returns:
         numpy array of init states (num_states, state_dim)
     """
+    from robosuite.utils.errors import RandomizationError
+    
     # Set deterministic seeds if requested
     if deterministic:
         import random
         np.random.seed(base_seed)
         random.seed(base_seed)
     
-    # Create environment with the variant BDDL
-    env = OffScreenRenderEnv(
-        bddl_file_name=variant_bddl_path,
-        camera_heights=128,
-        camera_widths=128,
-    )
+    # Create environment with the variant BDDL - with retry logic
+    max_retries = 5
+    env = None
+    for attempt in range(max_retries):
+        try:
+            env = OffScreenRenderEnv(
+                bddl_file_name=variant_bddl_path,
+                camera_heights=128,
+                camera_widths=128,
+            )
+            break
+        except RandomizationError as e:
+            if attempt == max_retries - 1:
+                raise ValueError(
+                    f"Failed to create environment after {max_retries} attempts. "
+                    f"Objects may not fit in swapped regions. Error: {e}"
+                )
+            print(f"      Retry {attempt + 1}/{max_retries} due to placement error...")
+            continue
+    
+    if env is None:
+        raise ValueError("Failed to create environment")
     
     # Seed the environment if deterministic
     if deterministic and hasattr(env, 'seed'):
@@ -158,8 +176,30 @@ def regenerate_init_states(variant_bddl_path, num_states=10, deterministic=False
             if hasattr(env, 'seed'):
                 env.seed(state_seed)
         
-        # Reset environment (generates random placement within regions)
-        env.reset()
+        # Reset environment with retry logic
+        max_reset_retries = 10
+        reset_success = False
+        for retry in range(max_reset_retries):
+            try:
+                # Re-seed for determinism on retries
+                if deterministic and retry > 0:
+                    # Use same seed as initial attempt to maintain determinism
+                    retry_seed = base_seed + i
+                    np.random.seed(retry_seed)
+                    if hasattr(env, 'seed'):
+                        env.seed(retry_seed)
+                
+                env.reset()
+                reset_success = True
+                break
+            except RandomizationError:
+                if retry == max_reset_retries - 1:
+                    print(f"      WARNING: Failed to generate state {i+1} after {max_reset_retries} retries, skipping...")
+                continue
+        
+        if not reset_success:
+            # Skip this state if we can't generate it
+            continue
         
         # Settle objects with reduced steps (5 instead of 10 for speed)
         for _ in range(5):
@@ -173,6 +213,13 @@ def regenerate_init_states(variant_bddl_path, num_states=10, deterministic=False
             print(f"      Generated init state {i+1}/{num_states}")
     
     env.close()
+    
+    if len(init_states) == 0:
+        raise ValueError(
+            "Failed to generate any valid init states. "
+            "Objects likely don't fit in the swapped regions. "
+            "Consider adjusting which objects are swapped."
+        )
     
     return np.array(init_states)
 
