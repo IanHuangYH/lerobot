@@ -210,6 +210,9 @@ def run_evaluation_for_variant(
             # Update episode index and video paths in the temp info
             if 'per_task' in temp_info:
                 for task in temp_info['per_task']:
+                    # Add task_name to the task info
+                    task['task_name'] = eval_config.get('task_name', '')
+                    
                     if 'metrics' in task:
                         # Update video paths to point to final location
                         if 'video_paths' in task['metrics']:
@@ -326,10 +329,32 @@ def run_evaluation_for_variant(
             backup_dir.rmdir()
 
 
+def get_task_name_from_libero(task_suite: str, task_id: int) -> str:
+    """
+    Get task name from LIBERO's benchmark API.
+    
+    This replicates what LiberoEnv._make_envs_task() does:
+        task = task_suite.get_task(task_id)
+        self.task = task.name
+    
+    We need the task name to find variant BDDL files: {task_name}_0.bddl, etc.
+    """
+    from libero.libero.benchmark import get_benchmark
+    
+    bench_class = get_benchmark(task_suite)
+    bench = bench_class()
+    
+    if task_id < bench.n_tasks:
+        task = bench.get_task(task_id)
+        return task.name
+    
+    return ""
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate policy on LIBERO scene variants")
     parser.add_argument("--task_suite", type=str, required=True, help="Task suite (e.g., libero_object)")
-    parser.add_argument("--task_name", type=str, required=True, help="Task name (without variant suffix)")
+    parser.add_argument("--task_name", type=str, default=None, help="Task name (will auto-discover if not provided)")
     parser.add_argument("--task_id", type=str, required=True, help="Task ID in LIBERO suite")
     parser.add_argument("--max_episodes", type=int, required=True, help="Maximum number of variants to evaluate")
     parser.add_argument("--policy_path", type=str, required=True, help="Path to policy model")
@@ -344,6 +369,15 @@ def main():
     parser.add_argument("--init_dir", type=str, required=True, help="Directory containing init files")
     
     args = parser.parse_args()
+    
+    # Auto-discover task name if not provided
+    if not args.task_name:
+        print(f"Auto-discovering task name for ID {args.task_id}...")
+        args.task_name = get_task_name_from_libero(args.task_suite, int(args.task_id))
+        if not args.task_name:
+            print(f"ERROR: Could not find task name for ID {args.task_id}")
+            sys.exit(1)
+        print(f"Discovered task name: {args.task_name}")
     
     bddl_dir = Path(args.bddl_dir)
     init_dir = Path(args.init_dir)
@@ -384,6 +418,7 @@ def main():
     # Evaluation config
     eval_config = {
         'task_suite': args.task_suite,
+        'task_name': args.task_name,
         'task_ids': f'[{args.task_id}]',
         'policy_path': args.policy_path,
         'policy_gpu_id': args.policy_gpu_id,
