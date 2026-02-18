@@ -2,6 +2,7 @@
 # Evaluate a policy on LIBERO scene variants.
 #
 # This script evaluates scene variants (different object layouts) for multiple tasks.
+# Supports parallel execution of multiple tasks to improve throughput.
 #
 # FOLDER STRUCTURE:
 #   eval_logs/OUTPUTS_DIR/                          <- All results (Level 1)
@@ -39,6 +40,7 @@
 # ============================================================================
 ALL_GPU=0,1
 POLICY_GPU_ID=0  # Which physical GPU to use (0 or 1)
+MAX_PARALLEL_TASKS=2  # Number of tasks to evaluate in parallel (recommended: 1 per GPU)
 
 TASK_SUITE=libero_object  # libero_spatial, libero_object, libero_goal, libero_10
 
@@ -78,12 +80,14 @@ echo "Output Dir: $OUTPUTS_DIR"
 echo "============================================================================"
 echo ""
 
-# Loop through all task IDs
-for TASK_ID in "${TASK_IDS[@]}"; do
+# Function to evaluate one task (used by parallel execution)
+eval_task() {
+    local TASK_ID=$1
+    local GPU_ID=$2
     
     echo ""
     echo "┌────────────────────────────────────────────────────────────────────────────┐"
-    echo "│ Evaluating Task ID $TASK_ID"
+    echo "│ Evaluating Task ID $TASK_ID on GPU $GPU_ID"
     echo "└────────────────────────────────────────────────────────────────────────────┘"
     echo ""
     
@@ -93,7 +97,7 @@ for TASK_ID in "${TASK_IDS[@]}"; do
         --task_id=$TASK_ID \
         --max_episodes=$EPISODE \
         --policy_path=$POLICY_PATH \
-        --policy_gpu_id=$POLICY_GPU_ID \
+        --policy_gpu_id=$GPU_ID \
         --cuda_devices=$ALL_GPU \
         --n_action_steps=$N_ACTION_STEPS \
         --compile_model=$COMPILE_MODEL \
@@ -105,10 +109,75 @@ for TASK_ID in "${TASK_IDS[@]}"; do
     
     if [ $? -eq 0 ]; then
         echo "✓ Task $TASK_ID completed successfully"
+        return 0
     else
         echo "✗ Task $TASK_ID failed"
+        return 1
     fi
-done
+}
+
+export -f eval_task
+export TASK_SUITE EPISODE POLICY_PATH ALL_GPU N_ACTION_STEPS COMPILE_MODEL USE_INIT_STATES SAVE_ATTENTION_MAPS OUTPUTS_DIR BDDL_DIR INIT_DIR
+
+# Parallel execution with GPU assignment
+if [ $MAX_PARALLEL_TASKS -gt 1 ]; then
+    echo "Running with parallel execution: $MAX_PARALLEL_TASKS tasks at a time"
+    echo ""
+    
+    # Extract available GPU IDs from ALL_GPU string
+    IFS=',' read -ra GPU_ARRAY <<< "$ALL_GPU"
+    NUM_GPUS=${#GPU_ARRAY[@]}
+    
+    # Process tasks in batches
+    task_idx=0
+    total_tasks=${#TASK_IDS[@]}
+    
+    while [ $task_idx -lt $total_tasks ]; do
+        # Start a batch of parallel tasks
+        batch_pids=()
+        batch_tasks=()
+        
+        for ((i=0; i<$MAX_PARALLEL_TASKS && task_idx<$total_tasks; i++)); do
+            TASK_ID=${TASK_IDS[$task_idx]}
+            # Round-robin GPU assignment
+            GPU_ID=${GPU_ARRAY[$((i % NUM_GPUS))]}
+            
+            echo "[Batch] Starting Task $TASK_ID on GPU $GPU_ID (background job)"
+            eval_task $TASK_ID $GPU_ID &
+            batch_pids+=($!)
+            batch_tasks+=($TASK_ID)
+            ((task_idx++))
+        done
+        
+        # Wait for all tasks in this batch to complete
+        echo ""
+        echo "Waiting for batch of ${#batch_pids[@]} tasks to complete..."
+        failed_tasks=()
+        for idx in "${!batch_pids[@]}"; do
+            pid=${batch_pids[$idx]}
+            task_id=${batch_tasks[$idx]}
+            if wait $pid; then
+                echo "  ✓ Task $task_id (PID $pid) completed"
+            else
+                echo "  ✗ Task $task_id (PID $pid) failed"
+                failed_tasks+=($task_id)
+            fi
+        done
+        
+        if [ ${#failed_tasks[@]} -gt 0 ]; then
+            echo "⚠ Warning: ${#failed_tasks[@]} tasks failed in this batch: ${failed_tasks[*]}"
+        fi
+        echo ""
+    done
+else
+    echo "Running with sequential execution (MAX_PARALLEL_TASKS=1)"
+    echo ""
+    
+    # Sequential execution (original behavior)
+    for TASK_ID in "${TASK_IDS[@]}"; do
+        eval_task $TASK_ID $POLICY_GPU_ID
+    done
+fi
 
 echo ""
 echo "============================================================================"

@@ -87,7 +87,9 @@ def run_evaluation_for_variant(
     print(f"Init: {init_path.name}")
     
     # Temporary output directory for this single evaluation
-    temp_output_dir = variants_dir.parent / f".temp_eval_{variant_idx}"
+    # Include task_id to avoid collisions when running multiple tasks in parallel
+    task_id = eval_config.get('task_ids', '0').strip('[]')
+    temp_output_dir = variants_dir.parent / f".temp_eval_task{task_id}_variant{variant_idx}"
     
     # Create backup directory
     backup_dir = base_bddl_path.parent / ".variant_eval_backup"
