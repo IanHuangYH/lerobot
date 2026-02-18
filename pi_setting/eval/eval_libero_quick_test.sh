@@ -2,11 +2,11 @@
 ALL_GPU=0,1
 POLICY_GPU_ID=0  # Which physical GPU to use (0 or 1)
 
-OUTPUTS_DIR=./eval_logs/quick_test
-TASK_SUITE=libero_spatial # libero_spatial,libero_object,libero_goal,libero_10
+OUTPUTS_DIR=./eval_logs/object_attention
+TASK_SUITE=libero_object # libero_spatial,libero_object,libero_goal,libero_10
 
 EPISODE=1  # run amount for each task (for success rate)
-TASK_IDS='[0]'  # different scenes for one group
+TASK_IDS='[0,1,2,3,4,5,6,7,8,9]'  # different scenes for one group
 
 # Set batch_size to min(EPISODE, 10) to avoid validation errors
 BATCH_SIZE=$(( EPISODE < 10 ? EPISODE : 10 ))
@@ -20,7 +20,9 @@ CUDA_VISIBLE_DEVICES=$ALL_GPU lerobot-eval  \
  --policy.path=lerobot/pi05_libero_finetuned    \
  --policy.n_action_steps=10 \
  --policy.device=cuda:$POLICY_GPU_ID \
+ --policy.compile_model=false \
  --output_dir=$OUTPUTS_DIR  \
  --env.max_parallel_tasks=1 \
  --env.task_ids=$TASK_IDS \
- --env.init_states=true
+ --env.init_states=true \
+ --eval.save_attention_maps=true 
