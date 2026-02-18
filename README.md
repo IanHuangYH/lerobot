@@ -51,6 +51,7 @@ Based on the docker environment(with conda installation and mount lerobot repo),
 
 ```bash
 # create conda env
+# create a new terminal (bashrc works) to run following command
 conda create -y -n lerobot python=3.10
 conda init
 conda activate lerobot
