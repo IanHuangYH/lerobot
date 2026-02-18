@@ -181,3 +181,4 @@ outputs/
 # result
 *.mp4
 *.png
+*.pt
