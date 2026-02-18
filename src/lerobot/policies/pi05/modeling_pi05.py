@@ -1259,6 +1259,10 @@ class PI05Policy(PreTrainedPolicy):
 
         Images from LeRobot are typically in [B, C, H, W] format and normalized to [0, 1].
         PaliGemma expects images in [B, C, H, W] format and normalized to [-1, 1].
+        
+        returns:
+            images: List of preprocessed image tensors, one for each expected image feature.
+            [img, img_2, redunant_img]
         """
         images = []
         img_masks = []
