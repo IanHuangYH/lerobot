@@ -40,6 +40,9 @@ echo $TORCHINDUCTOR_CACHE_DIR # /cache/runtime/torchinductor
 echo $XDG_CACHE_HOME # /cache/runtime/xdg
 test -w /cache/runtime/triton && echo "triton writable" # return triton writable
 test -w /cache/runtime/torchinductor && echo "inductor writable" # return inductor writable
+
+# If cache directories are not writable, create them:
+# mkdir -p /cache/runtime/triton /cache/runtime/torchinductor /cache/runtime/xdg
 ```
 2. check home dic
 ```bash
@@ -52,8 +55,13 @@ Based on the docker environment(with conda installation and mount lerobot repo),
 ```bash
 # create conda env
 conda create -y -n lerobot python=3.10
-conda init
+
+# After creating the conda env, you need to source conda and activate the environment.
+# If you get "CondaError: Run 'conda init' before 'conda activate'", do this:
+source /opt/conda/etc/profile.d/conda.sh
 conda activate lerobot
+
+# OR open a new terminal (if bashrc is already configured with conda init)
 
 # install required pkg
 conda install ffmpeg -c conda-forge -y
@@ -69,10 +77,25 @@ pip install -e ".[pi]"
 
 # install libero
 conda install cmake==3.24.3 -y # make sure cmake pkg is compatible with libero, see https://github.com/huggingface/lerobot/issues/105
-pip install -e ".[libero]"
+
+# Option 1: install libero from PyPI (default)
+# pip install -e ".[libero]"
+
+# Option 2: use workspace version from third_party (recommended for customization)
+cd third_party
+git clone git@github.com:IanHuangYH/LIBERO.git
+cd LIBERO
+pip install -r requirements.txt
+pip install -e .
+cd /workspace/lerobot
 
 # modify pkg for https://github.com/huggingface/lerobot/issues/2641
 ./pi_setting/env_setting/Transformer_version_reset.sh
+
+# IMPORTANT: Reinstall packages that were compiled against old numpy
+# The Transformer_version_reset.sh upgrades numpy, so opencv and matplotlib need rebuilding
+pip uninstall -y opencv-python matplotlib
+pip install opencv-python matplotlib
 
 # login huggingface and input token (create your own huggingface account and add token before do this step)
 huggingface-cli login

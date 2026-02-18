@@ -2,7 +2,7 @@
 ALL_GPU=0,1
 POLICY_GPU_ID=0  # Which physical GPU to use (0 or 1)
 
-OUTPUTS_DIR=./eval_logs/object_attention
+OUTPUTS_DIR=./eval_logs/quick_test
 TASK_SUITE=libero_object # libero_spatial,libero_object,libero_goal,libero_10
 
 EPISODE=1  # run amount for each task (for success rate)
