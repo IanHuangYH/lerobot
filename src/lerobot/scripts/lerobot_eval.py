@@ -527,7 +527,7 @@ def eval_policy(
                     break
 
                 videos_dir.mkdir(parents=True, exist_ok=True)
-                video_path = videos_dir / f"eval_episode_{n_episodes_rendered}.mp4"
+                video_path = videos_dir / f"eval_episode_{n_episodes_rendered:05d}.mp4"
                 video_paths.append(str(video_path))
                 thread = threading.Thread(
                     target=write_video,
