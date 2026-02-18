@@ -9,8 +9,9 @@ print("="*60)
 print("LIBERO Workspace Configuration Test")
 print("="*60)
 
-# Check module location
-module_path = libero.__file__
+# Check module location (use libero.libero since libero is a namespace package)
+import libero.libero
+module_path = libero.libero.__file__
 print(f"\n✓ Module path: {module_path}")
 
 if "/workspace/lerobot/third_party/LIBERO" in str(module_path):

@@ -57,11 +57,12 @@ else
     echo "✓ Conda activation already configured"
 fi
 
-# Install gym package (required by LIBERO, not gymnasium)
+# Install required packages for LIBERO
 echo ""
 echo "Installing dependencies..."
-pip install gym==0.26.2 -q
+pip install gym==0.26.2 pyyaml -q
 echo "✓ Installed gym==0.26.2 (required by LIBERO)"
+echo "✓ Installed pyyaml (required by LIBERO)"
 
 echo ""
 echo "=================================================="

@@ -6,7 +6,7 @@
 
 - Removed conda version of LIBERO
 - Added `/workspace/lerobot/third_party/LIBERO` to `PYTHONPATH` in `~/.bashrc`
-- Installed `gym==0.26.2` (required by LIBERO, not gymnasium)
+- Installed `gym==0.26.2` and `pyyaml` (required by LIBERO)
 - LIBERO is now loaded directly from your workspace
 
 ### 2. Updated Configuration
@@ -35,11 +35,17 @@ Added `conda activate lerobot` to `~/.bashrc` so the environment activates autom
 4. **[/workspace/lerobot/docs/libero_customization.md](file:///workspace/lerobot/docs/libero_customization.md)**
    - Comprehensive guide for customizing LIBERO tasks
 
-## ✅ How to Verify Everything Works
-
-### Test 1: Check LIBERO Paths
+## Set LIBERO env in third_party folder
 ```bash
-python /workspace/lerobot/test_libero_workspace.py
+./setup_libero_workspace.sh # run env setting script
+```
+
+## ✅ How to Verify Everything Works
+### Test 1: Check LIBERO Paths
+create another terminal
+```bash
+conda activate lerobot
+python /workspace/lerobot/pi_setting/env_setting/libero_ws/test_libero_workspace.py
 ```
 
 Expected output:
@@ -116,8 +122,8 @@ Just open a new terminal and everything works!
 **Issue**: Changes to BDDL files not taking effect
 - **Solution**: Make sure you're editing files in `/workspace/lerobot/third_party/LIBERO/`, not in conda site-packages
 
-**Issue**: "Module not found" errors
-- **Solution**: Run `source ~/.bashrc` or open a new terminal
+**Issue**: "Module not found" errors (e.g., `ModuleNotFoundError: No module named 'yaml'`)
+- **Solution**: Run `source ~/.bashrc` or open a new terminal. If using workspace LIBERO, make sure `pyyaml` is installed: `pip install pyyaml`
 
 **Issue**: Wrong paths in warnings
 - **Solution**: Check `~/.libero/config.yaml` points to workspace paths
