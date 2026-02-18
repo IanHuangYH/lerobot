@@ -72,6 +72,14 @@ pip install -e ".[pi]"
 conda install cmake==3.24.3 -y # make sure cmake pkg is compatible with libero, see https://github.com/huggingface/lerobot/issues/105
 pip install -e ".[libero]"
 
+# if want to add libero into third_party folder
+cd third_party
+git clone git@github.com:IanHuangYH/LIBERO.git #LIBERO
+cd LIBERO
+conda activate lerobot
+pip install -r requirements.txt
+pip install -e . # with editable
+
 # modify pkg for https://github.com/huggingface/lerobot/issues/2641
 ./pi_setting/env_setting/Transformer_version_reset.sh
 
