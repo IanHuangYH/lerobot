@@ -252,6 +252,7 @@ def rollout(
         # Apply environment-specific preprocessing (e.g., LiberoProcessorStep for LIBERO)
         observation = env_preprocessor(observation)
 
+        # Apply policy preprocessing (e.g., tokenization to language observations for pi0.5)
         observation = preprocessor(observation)
         with torch.inference_mode():
             action = policy.select_action(observation)
@@ -669,6 +670,7 @@ def eval_main(cfg: EvalPipelineConfig):
         "rename_observations_processor": {"rename_map": cfg.rename_map},
     }
 
+    # Create policy preprocessors and postprocessors, language tokenizer is included in preprocessor for pi0.5
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=cfg.policy,
         pretrained_path=cfg.policy.pretrained_path,
