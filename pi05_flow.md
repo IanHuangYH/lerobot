@@ -956,22 +956,48 @@ New Input Embeddings [1, 50, 1024]
 **Code Location**:
 ```python
 def embed_suffix(self, noisy_actions, timestep):
-    # Create timestep embedding (sinusoidal)
+    # Step 1: Sinusoidal embedding (fixed, non-learnable)
     time_emb = create_sinusoidal_pos_embedding(timestep, dim=1024)
+    
+    # Step 2: MLP processing (learnable)
     time_emb = self.time_mlp(time_emb)  # Process through MLP
     
     # Embed noisy actions
     action_emb = self.action_in_proj(noisy_actions)  # [B, 50, 1024]
     
-    # Combine for AdaRMS conditioning
-    adarms_cond = time_emb  # Used to modulate expert Gemma layers
+    # Use timestep for adaptive normalization
+    adarms_cond = time_emb  # Modulates expert Gemma layers
 ```
+
+**Why Two-Stage Timestep Embedding?**
+
+The timestep (scalar: 0.0 to 1.0) undergoes two transformations:
+
+1. **Sinusoidal Embedding** (fixed): Converts scalar → structured 1024-D vector
+   - Uses sine/cosine at multiple frequencies (like Transformer position encoding)
+   - Provides smooth, rich features for different noise levels
+   - Example: `0.8 → [0.59, -0.81, 0.95, -0.31, ...]` (deterministic)
+
+2. **MLP Processing** (learned): Transforms generic features → task-specific conditioning
+   - Learns what each timestep means for action denoising
+   - Produces `adarms_cond` for **AdaRMS** (Adaptive RMS Normalization)
+   - Different timesteps → different normalization parameters (heavy noise vs clean)
+
+**How AdaRMS Uses It**:
+```python
+# Inside action expert layers:
+modulation = dense(adarms_cond)  # [1024] → [scale, shift, gate]
+normalized = rms_norm(hidden_states)
+output = normalized * (1 + scale) + shift  # Timestep-dependent normalization
+```
+
+This allows the model to process noisy vs clean actions differently!
 
 **Example Output**:
 ```python
 suffix_embs:      [1, 50, 1024]  # Action expert hidden size
 suffix_pad_masks: [1, 50]        # All True (50 action steps)
-suffix_att_masks: [1, 50]        # [1, 0, 0, ..., 0] (causal for actions)
+suffix_att_masks: [1, 50]        # [1, 0, 0, ..., 0] (causal for actions) only action can attend to obs, but not vice versa
 adarms_cond:      [1, 1024]      # Timestep conditioning
 ```
 
@@ -1033,6 +1059,35 @@ Legend:
 ✗ = Cannot attend (masked out)
 ```
 
+**Layer-by-Layer Processing** (18 Layers Total):
+
+Both VLM (prefix) and Expert (suffix) have 18 transformer layers. During denoising, the expert processes actions layer-by-layer, with each layer attending to the corresponding cached prefix layer:
+
+```
+VLM (Prefix - Cached)              Expert (Suffix - Active)
+─────────────────────              ────────────────────────
+Layer 0: [Image+Text]              Layer 0: [Actions]
+  ├─ K₀: (1,1,968,256) ──┐           ├─ Generate Q₀,K₀,V₀ from actions
+  └─ V₀: (1,1,968,256)   │           └─ Concatenate: K=[Cached_K₀ | K₀]
+                         │               Attention: Q₀ @ [Cached_K₀+K₀]
+Layer 1: [Hidden]        │        Layer 1: [Hidden]
+  ├─ K₁: (1,1,968,256) ──┼─┐         ├─ Generate Q₁,K₁,V₁
+  └─ V₁: (1,1,968,256)   │ │         └─ Concatenate: K=[Cached_K₁ | K₁]
+                         │ │             Attention: Q₁ @ [Cached_K₁+K₁]
+...                      │ │      ...
+Layer 17: [Hidden]       │ │      Layer 17: [Hidden]
+  ├─ K₁₇: (1,1,968,256) ─┴─┴─...──→  ├─ Generate Q₁₇,K₁₇,V₁₇
+  └─ V₁₇: (1,1,968,256)               └─ Concatenate: K=[Cached_K₁₇ | K₁₇]
+                                          Attention: Q₁₇ @ [Cached_K₁₇+K₁₇]
+```
+
+**Key Insight**: 
+- `past_key_values` = `[(K₀,V₀), (K₁,V₁), ..., (K₁₇,V₁₇)]` with 18 tuples
+- Each expert layer i reuses cached K,V from VLM layer i
+- Actions attend to **same-depth** prefix features (layer alignment)
+- Prefix K,V: Computed once, cached, reused 64 times (all denoising steps)
+- Action K,V: Generated fresh every denoising step (actions change)
+
 ---
 
 ### Step 12: Action Prediction (Denoising)
@@ -1043,6 +1098,14 @@ Legend:
 **Code Location**:
 ```python
 def denoise_step(self, prefix_pad_masks, past_key_values, x_t, timestep):
+    # Embed suffix (actions + timestep)
+    suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, timestep)
+    
+    # Construct attention masks
+    prefix_pad_2d_masks = prefix_pad_masks[:, None, :].expand(batch_size, suffix_len, prefix_len)
+    suffix_att_2d_masks = make_att_2d_masks(suffix_pad_masks, suffix_att_masks)
+    full_att_2d_masks = torch.cat([prefix_pad_2d_masks, suffix_att_2d_masks], dim=2)
+    
     # Process noisy actions through expert
     result = self.paligemma_with_expert.forward(
         inputs_embeds=[None, suffix_embs],  # Only suffix
@@ -1054,6 +1117,93 @@ def denoise_step(self, prefix_pad_masks, past_key_values, x_t, timestep):
     v_t = self.action_out_proj(suffix_out)  # Velocity prediction
     
     return v_t
+```
+
+**Understanding Attention Mask Shapes**:
+
+Attention masks control **which positions attend to which**, not embedding values. Shape format: `(batch, query_length, key_length)`
+
+**Example with 968 prefix tokens (image+text) and 50 action tokens**:
+
+1. **`prefix_pad_2d_masks` = (1, 50, 968)**
+   - Meaning: Each of 50 action tokens (queries) can attend to all 968 prefix tokens (keys)
+   - Created by expanding prefix_pad_masks to match action query dimension
+   - The "50" is the query dimension (actions asking "what can I look at?")
+
+2. **`suffix_att_2d_masks` = (1, 50, 50)**
+   - Meaning: Each of 50 action tokens (queries) can attend to which of the 50 action tokens (keys)
+   - Typically causal: Action[i] can only attend to Action[0...i]
+   - Two "50"s: query×key attention matrix within actions
+
+3. **`full_att_2d_masks` = (1, 50, 1018)**
+   - Concatenated along dim=2 (key dimension): [968 prefix + 50 suffix] = 1018 keys
+   - Meaning: Each of 50 action tokens can attend to all 1018 tokens total
+   - Shape: (batch=1, action_queries=50, all_keys=1018)
+
+**Why not align with `suffix_embs` (1, 50, 1024)?**
+- Embedding dimension (1024) is the feature vector size for each token
+- Attention masks only care about sequence positions (which token attends to which)
+- These are completely separate concepts!
+
+---
+
+**Layer-by-Layer Attention with Cached KV**:
+
+When `inputs_embeds=[None, suffix_embs]` with `past_key_values`, the expert processes actions layer-by-layer:
+
+**Q1: Do VLM and Expert have the same number of layers?**
+- Yes! Both have 18 layers (configured in `get_gemma_config()`)
+- VLM transformer: 18 layers for prefix (image + text)
+- Action Expert: 18 layers for suffix (actions)
+
+**Q2: Layer-aligned attention?**
+- Yes! Expert layer i attends to VLM layer i's cached K,V
+- Example flow through Expert Layer 0:
+  ```python
+  # In GemmaAttention.forward() for layer 0
+  # Step 1: Generate Q,K,V from action embeddings (50 tokens)
+  query_states = self.q_proj(suffix_embs)  # Action queries
+  key_states = self.k_proj(suffix_embs)    # Action keys (50 tokens)
+  value_states = self.v_proj(suffix_embs)  # Action values (50 tokens)
+  
+  # Step 2: Concatenate with cached prefix K,V from VLM layer 0
+  if past_key_value is not None:
+      key_states = torch.cat([
+          past_key_values[layer_idx][0],  # Cached prefix K (968 tokens)
+          key_states                      # New action K (50 tokens)
+      ], dim=2)  # → Combined K (1018 tokens)
+      
+      value_states = torch.cat([
+          past_key_values[layer_idx][1],  # Cached prefix V (968 tokens)
+          value_states                    # New action V (50 tokens)
+      ], dim=2)  # → Combined V (1018 tokens)
+  
+  # Step 3: Attention with combined K,V
+  attn = query_states @ key_states.transpose(-2, -1)  # (50, 1018)
+  # Actions attend to [968 prefix tokens + 50 action tokens]
+  ```
+
+**Q3: Are prefix K,V recomputed?**
+- **No!** Prefix K,V are cached and reused (efficiency)
+- **Yes!** Action K,V are freshly generated each denoising step (actions change)
+- Architecture: `past_key_values` is a list of 18 tuples: `[(K₀, V₀), (K₁, V₁), ..., (K₁₇, V₁₇)]`
+- Each tuple contains prefix K,V at that transformer depth (shape: `[1, 1, 968, 256]`)
+
+**Code Path**:
+```
+denoise_step()
+  ↓
+PaliGemmaWithExpertModel.forward(inputs_embeds=[None, suffix_embs], past_key_values=...)
+  ↓
+GemmaForCausalLM → GemmaModel.forward()
+  ↓
+For layer_idx in range(18):
+    GemmaDecoderLayer.forward(past_key_value=past_key_values[layer_idx])
+      ↓
+    GemmaAttention.forward()
+      - Generate Q,K,V from actions
+      - Concatenate K,V with cached prefix K,V
+      - Compute attention over combined [prefix + actions]
 ```
 
 **Example Output**:
