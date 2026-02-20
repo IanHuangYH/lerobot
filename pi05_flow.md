@@ -958,15 +958,23 @@ New Input Embeddings [1, 50, 1024]
 def embed_suffix(self, noisy_actions, timestep):
     # Step 1: Sinusoidal embedding (fixed, non-learnable)
     time_emb = create_sinusoidal_pos_embedding(timestep, dim=1024)
+    # Example: 0.8 → [0.59, -0.81, 0.95, -0.31, ...] (1024-D)
     
     # Step 2: MLP processing (learnable)
-    time_emb = self.time_mlp(time_emb)  # Process through MLP
+    time_emb = self.time_mlp_in(time_emb)
+    time_emb = F.silu(time_emb)
+    time_emb = self.time_mlp_out(time_emb)  
+    time_emb = F.silu(time_emb)  # [1, 1024]
     
-    # Embed noisy actions
-    action_emb = self.action_in_proj(noisy_actions)  # [B, 50, 1024]
+    # Step 3: Embed noisy actions
+    action_emb = self.action_in_proj(noisy_actions)  # [1, 50, 1024]
     
-    # Use timestep for adaptive normalization
-    adarms_cond = time_emb  # Modulates expert Gemma layers
+    # Step 4: CRITICAL - Separate paths!
+    action_time_emb = action_emb  # ← ONLY actions, NO timestep!
+    adarms_cond = time_emb        # ← Timestep for adaptive normalization
+    
+    embs.append(action_time_emb)  # Return as suffix_embs
+    return embs, pad_masks, att_masks, adarms_cond
 ```
 
 **Why Two-Stage Timestep Embedding?**
@@ -992,6 +1000,79 @@ output = normalized * (1 + scale) + shift  # Timestep-dependent normalization
 ```
 
 This allows the model to process noisy vs clean actions differently!
+
+---
+
+**Critical Design Choice: Timestep Separation**
+
+**Q: Why doesn't `suffix_embs` include timestep information?**
+
+```python
+# In embed_suffix():
+action_emb = self.action_in_proj(noisy_actions)  # (1, 50, 1024)
+time_emb = self.time_mlp(...)                    # (1, 1024)
+
+action_time_emb = action_emb  # ← ONLY actions, NO timestep concatenated!
+adarms_cond = time_emb         # ← Timestep goes to separate path
+
+return embs, pad_masks, att_masks, adarms_cond
+```
+
+**Answer**: This is **Adaptive Normalization** - a powerful diffusion conditioning technique:
+
+- **Traditional approach**: Concatenate or add timestep to input embeddings
+- **AdaRMS approach**: Use timestep to **modulate layer normalization** parameters
+
+**Why This Is Better**:
+
+1. **Efficiency**: Timestep affects EVERY layer without increasing sequence length
+   - No extra 50 tokens for timestep
+   - Smaller attention computation
+
+2. **Expressiveness**: Each of 18 layers can adapt differently to the same timestep
+   - Layer 0: Broad feature extraction
+   - Layer 17: Fine detail refinement
+   - Same timestep, different processing strategies per layer
+
+3. **Dynamic Control**: 3 learned parameters (scale, shift, gate) per layer
+   ```python
+   # Early denoising (t=0.8, very noisy):
+   scale=large, shift=high, gate=low → Aggressive transformation
+   
+   # Late denoising (t=0.1, almost clean):
+   scale=small, shift=low, gate=high → Gentle refinement
+   ```
+
+4. **Separation of Concerns**:
+   - `suffix_embs`: **What** to denoise (action content/trajectory)
+   - `adarms_cond`: **How** to denoise (timestep-dependent processing)
+
+**AdaRMS in Action (Each of 18 Layers)**:
+```python
+# Before attention in GemmaDecoderLayer:
+hidden_states, gate = layer.input_layernorm(hidden_states, cond=adarms_cond)
+# ↑ Timestep modulates normalization
+
+# Attention operates on modulated features
+attn_out, _ = layer.self_attn(hidden_states, ...)
+
+# Gated residual using timestep-derived gate
+hidden_states = gated_residual(residual, attn_out, gate)
+
+# Before MLP: Again modulated by timestep
+hidden_states, gate = layer.post_attention_layernorm(hidden_states, cond=adarms_cond)
+```
+
+This is similar to **AdaLN** (Adaptive Layer Normalization) in DiT and **FiLM** (Feature-wise Linear Modulation) in conditional generation models!
+
+**Comparison with Prefix (Observation)**:
+- **Prefix (VLM)**: `use_adarms=[False, ...]` → Standard RMS normalization
+  - No timestep conditioning needed (observation doesn't change)
+  - Computed once, cached, reused
+  
+- **Suffix (Expert)**: `use_adarms=[..., True]` → Adaptive RMS normalization  
+  - Timestep conditioning via `adarms_cond`
+  - Recomputed every denoising step (actions evolve from noise → clean)
 
 **Example Output**:
 ```python
