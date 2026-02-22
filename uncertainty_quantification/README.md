@@ -66,30 +66,225 @@ Uncertainty per token: (256,) scores
 
 ---
 
-## 📊 Why This Design?
+## 📊 RND Design Options & Rationale
 
-### **1. Train on Individual Tokens (Not Mean-Pooled)**
+### **Three Possible Approaches**
 
-**❌ Initial idea**: Train on mean-pooled embeddings `(4096-D)` for efficiency
-- **Problem**: Distribution shift between training (mean) and inference (individual tokens)
-- Mean-pooled: smoothed, lower variance
-- Individual tokens: higher variance, more extreme values
-- RND would give unreliable scores on individual tokens!
+We consider three alternative architectures for RND-based uncertainty quantification:
 
-**✅ Corrected approach**: Train on individual tokens `(2048-D)` sampled from demonstrations
-- **Benefit**: Training/inference distributions match perfectly
-- **Trade-off**: Larger dataset but still manageable with sampling
+---
 
-### **2. Separate RND per Camera**
+#### **Option 1: Position-Agnostic Token-Level RND** ✅ **(Chosen for Initial Implementation)**
+
+**Architecture**:
+- **RND Input**: Individual `2048-D` SigLIP token embeddings (pure semantic features)
+- **Training Data**: Randomly sample 64 tokens per camera per frame
+- **Inference**: Process all 256 tokens per camera → per-token uncertainty scores
+- **Output**: Spatial uncertainty heatmap `(16, 16)` + overall score
+
+**Key Characteristics**:
+- ✅ Training/inference distributions match exactly (both use individual tokens)
+- ✅ Enables spatial uncertainty heatmaps (which token regions are novel?)
+- ✅ VLA-aligned: Leverages spatial generalization (doesn't penalize object rearrangements)
+- ✅ Moderate dataset size with sampling: ~15.7 GB per task type
+
+**When It Detects Uncertainty**:
+- Novel objects (unseen textures, shapes, colors)
+- New visual features (different materials, lighting conditions)
+- Object appearance changes (not position changes)
+
+**When It Misses**:
+- Spatial layout anomalies (object in wrong position but same visual features)
+- Positional constraint violations (e.g., object floating in impossible location)
+
+---
+
+#### **Option 2: Position-Aware Token-Level RND** (Future Work)
+
+**Architecture**:
+- **RND Input**: `2176-D` = `2048-D` token embedding + `128-D` positional encoding
+- **Training Data**: Same sampling strategy, but append positional encoding to each token
+- **Inference**: Same spatial heatmap capability
+- **Output**: Spatial uncertainty heatmap + overall score
+
+**Positional Encoding**:
+```python
+def add_positional_encoding(token_emb, token_idx):
+    """
+    Args:
+        token_emb: (2048,) - SigLIP token embedding
+        token_idx: int - Token position (0-255)
+    Returns:
+        position_aware_emb: (2176,) - [token_emb | pos_encoding]
+    """
+    row = token_idx // 16  # 0-15
+    col = token_idx % 16   # 0-15
+    
+    # 2D sinusoidal positional encoding (128-D)
+    pos_encoding = create_2d_sinusoidal_encoding(row, col, dim=128)
+    
+    return torch.cat([token_emb, pos_encoding], dim=0)  # (2176,)
+
+def create_2d_sinusoidal_grid(height, width, emb_dim, device):
+    """Create 2D sinusoidal positional encoding (Transformer-style)"""
+    y_pos = torch.arange(height, dtype=torch.float32, device=device)
+    x_pos = torch.arange(width, dtype=torch.float32, device=device)
+    
+    dim_t = torch.arange(emb_dim // 4, dtype=torch.float32, device=device)
+    dim_t = 10000 ** (2 * (dim_t // 2) / (emb_dim // 4))
+    
+    pos_y = y_pos[:, None] / dim_t
+    pos_x = x_pos[:, None] / dim_t
+    
+    pos_y = torch.stack([torch.sin(pos_y), torch.cos(pos_y)], dim=2).flatten(1)
+    pos_x = torch.stack([torch.sin(pos_x), torch.cos(pos_x)], dim=2).flatten(1)
+    
+    pos_encoding = torch.zeros(height, width, emb_dim, device=device)
+    pos_encoding[:, :, :emb_dim//2] = pos_y[:, None, :]
+    pos_encoding[:, :, emb_dim//2:] = pos_x[None, :, :]
+    
+    return pos_encoding  # (16, 16, 128)
+```
+
+**Key Characteristics**:
+- ✅ Detects both feature novelty AND spatial layout novelty
+- ✅ Still enables spatial heatmaps
+- ⚠️ May penalize valid scene rearrangements (false positives)
+- ⚠️ Higher complexity (2176-D input)
+
+**When It Detects Uncertainty**:
+- Everything from Option 1 (novel objects/features)
+- PLUS: Spatial anomalies (object in unusual position)
+- PLUS: Layout violations (spatial structure differs from training)
+
+**Trade-off vs Option 1**:
+- **Gain**: Better detection of spatial anomalies
+- **Cost**: Lower spatial generalization (VLA strength underutilized)
+
+---
+
+#### **Option 3: Mean-Pooled Embedding RND** (Future Work)
+
+**Architecture**:
+- **RND Input**: `4096-D` = concatenated mean-pooled embeddings from both cameras
+  - Agentview: mean over 256 tokens → `2048-D`
+  - Wrist: mean over 256 tokens → `2048-D`
+  - Combined: `[mean_agentview | mean_wrist]` → `4096-D`
+- **Training Data**: One `4096-D` vector per frame (no token sampling needed)
+- **Inference**: Single uncertainty score per frame (no spatial heatmap)
+- **Output**: Overall uncertainty only (cannot localize to image regions)
+
+**Key Characteristics**:
+- ✅ Smallest dataset size: ~100K frames × 4096-D = ~1.6 GB per task type
+- ✅ Holistic scene representation (captures global context)
+- ✅ Fastest inference (single forward pass per frame)
+- ❌ No spatial uncertainty heatmaps (loses per-token granularity)
+- ❌ Training/inference distribution mismatch if we want per-token scores later
+
+**When It Detects Uncertainty**:
+- Overall scene novelty (different room layout, lighting, object distribution)
+- Global appearance shifts (different environment altogether)
+
+**When It Misses**:
+- Localized anomalies (one small object differs while rest of scene is normal)
+- Fine-grained spatial details (mean-pooling smooths out local variations)
+
+**Implementation**:
+```python
+# Data collection
+def collect_mean_pooled_embeddings(img_embs_dict):
+    """
+    Args:
+        img_embs_dict: {
+            'agentview': (1, 256, 2048),
+            'wrist': (1, 256, 2048)
+        }
+    Returns:
+        mean_pooled: (4096,) - Combined mean-pooled embedding
+    """
+    agentview_mean = img_embs_dict['agentview'].mean(dim=1)  # (1, 2048)
+    wrist_mean = img_embs_dict['wrist'].mean(dim=1)          # (1, 2048)
+    
+    combined = torch.cat([agentview_mean, wrist_mean], dim=1)  # (1, 4096)
+    return combined.squeeze(0)  # (4096,)
+
+# RND model
+class RND_MeanPooled(nn.Module):
+    def __init__(self, input_dim=4096, output_size=512):
+        super().__init__()
+        self.target_network = nn.Sequential(
+            nn.Linear(4096, 2048), nn.LeakyReLU(),
+            nn.Linear(2048, 4096), nn.LeakyReLU(),
+            nn.Linear(4096, 2048), nn.LeakyReLU(),
+            nn.Linear(2048, output_size)
+        )
+        # ... (similar for predictor)
+```
+
+---
+
+### **Comprehensive Comparison**
+
+| Aspect | Option 1: Position-Agnostic | Option 2: Position-Aware | Option 3: Mean-Pooled |
+|--------|---------------------------|-------------------------|----------------------|
+| **RND Input Dimension** | 2048-D | 2176-D | 4096-D |
+| **Input Type** | Individual token | Token + position | Mean-pooled both cameras |
+| **Spatial Heatmap** | ✅ Yes | ✅ Yes | ❌ No |
+| **Dataset Size (per task)** | ~15.7 GB | ~17.0 GB | ~1.6 GB |
+| **Training Samples** | ~960K tokens | ~960K tokens | ~100K frames |
+| **Inference Speed** | Medium (batched tokens) | Medium (batched tokens) | Fast (single forward) |
+| **Detects Feature Novelty** | ✅ Yes | ✅ Yes | ✅ Yes (global) |
+| **Detects Spatial Novelty** | ❌ No | ✅ Yes | ⚠️ Coarse-grained |
+| **Spatial Generalization** | ✅ High | ⚠️ Lower | ✅ High |
+| **False Positive Risk** | Low | Higher | Low |
+| **Localization Ability** | ✅ Per-token | ✅ Per-token | ❌ Frame-level only |
+| **VLA Design Alignment** | ✅ Strong | ⚠️ Moderate | ✅ Strong |
+
+---
+
+### **Why Option 1 is Chosen for Initial Implementation**
+
+1. **Distribution Matching**: Training and inference both use individual tokens → no distribution shift
+2. **Spatial Heatmaps**: Enables visualization of *where* uncertainty is high (critical for debugging)
+3. **VLA Alignment**: VLAs are designed for spatial generalization → penalizing position changes is counterproductive
+4. **Practical Balance**: Reasonable dataset size with sampling, while preserving per-token granularity
+5. **Extensibility**: Can aggregate token-level scores to frame-level (Option 3 behavior) but not vice versa
+
+**Key Insight from Design Discussion**:
+> "VLA suppose can do the task even the object is in different place... maybe [position-aware] will be too sensitive, e.g., even there are no novel object but just some object exchange the location"
+
+Position-agnostic RND focuses on detecting novel visual features (what VLAs struggle with) rather than spatial rearrangements (what VLAs excel at).
+
+---
+
+### **When to Consider Alternative Options**
+
+**Option 2 (Position-Aware)** might be better if:
+- Experiments show spatial layout is critical for failure prediction
+- Task involves strict spatial constraints (e.g., "put in top-left drawer")
+- Position-agnostic RND misses important spatial anomalies
+- Combining both approaches (Option 1 + Option 2) improves detection
+
+**Option 3 (Mean-Pooled)** might be better if:
+- Spatial heatmaps are not needed (only overall uncertainty)
+- Storage/computation is highly constrained
+- Holistic scene-level uncertainty is more predictive than local features
+- Analysis shows per-token granularity doesn't improve failure prediction
+
+---
+
+### **Additional Design Decisions**
+
+#### **Separate RND per Camera**
 
 **Reasoning**:
 - Each camera sees different viewpoints (agentview = third-person, wrist = egocentric)
 - Separate models learn view-specific OOD patterns
 - Enables camera-specific uncertainty debugging
 
-**Input**: `2048-D` per camera (not concatenated `4096-D`)
+**Note**: Option 3 combines cameras via concatenation, but Options 1-2 keep them separate.
 
-### **3. Train 4 RNDs per Task Type (Not Per Scene)**
+#### **Train 4 RNDs per Task Type**
 
 **LIBERO Structure**:
 - 4 task types: spatial, object, goal, long
@@ -102,9 +297,11 @@ Uncertainty per token: (256,) scores
 | **Per task type (4 RNDs)** | **4** | **Good** | **Good** | **✅ Chosen** |
 | Per scene (40 RNDs) | 40 | Lowest | Highest | Overhead |
 
-**Chosen**: 4 RND models (one per task type) balances generalization and task-specific OOD detection.
+**Chosen**: 4 RND models (one per task type) × 2 cameras = **8 total models** for Option 1/2.
 
-### **4. Sample 64 Tokens per Frame**
+For Option 3: 4 RND models (one per task type, cameras combined) = **4 total models**.
+
+#### **Sample 64 Tokens per Frame** (Option 1 & 2)
 
 **Full collection**:
 - 100 episodes × 150 frames × 256 tokens × 2 cameras = 7.68M tokens
@@ -115,6 +312,10 @@ Uncertainty per token: (256,) scores
 - 1.92M × 2048 × 4 bytes ≈ **15.7 GB** per task type
 
 **Trade-off**: 75% storage reduction while preserving token-level variance
+
+**Option 3 (no sampling needed)**:
+- 100 episodes × 150 frames × 1 vector × 4096-D = 100K vectors
+- 100K × 4096 × 4 bytes ≈ **1.6 GB** per task type (smallest)
 
 ---
 
@@ -423,7 +624,163 @@ lerobot/
 
 ---
 
-## 📚 References
+## � Future Considerations: Position-Aware RND
+
+### **Current Approach: Position-Agnostic**
+
+The current implementation uses **position-agnostic** token-level RND:
+- **Input**: Pure `2048-D` SigLIP token embeddings (semantic features only)
+- **Rationale**: VLAs are designed for spatial generalization - they should succeed even when objects are repositioned
+- **Benefit**: Avoids false positives from rearranged scenes (different object positions in same task type)
+- **Detection focus**: Novel objects, textures, or features (not spatial layout changes)
+
+### **Alternative Approach: Position-Aware RND**
+
+Position-aware RND could be explored in future work to detect spatial novelty:
+
+**Architecture**:
+```python
+# Add positional encoding to token embeddings
+def add_positional_encoding(token_emb, token_idx):
+    """
+    Args:
+        token_emb: (2048,) - SigLIP token embedding
+        token_idx: int - Token position (0-255)
+    
+    Returns:
+        position_aware_emb: (2176,) - [token_emb | pos_encoding]
+    """
+    # Convert token index to 2D grid position
+    row = token_idx // 16  # 0-15
+    col = token_idx % 16   # 0-15
+    
+    # Create learnable or fixed positional encoding (128-D)
+    # Option 1: Sinusoidal (like Transformer)
+    pos_encoding = create_2d_sinusoidal_encoding(row, col, dim=128)
+    
+    # Option 2: Learnable embedding
+    # pos_encoding = learned_pos_embedding[row, col]  # (128,)
+    
+    # Concatenate: (2048,) + (128,) = (2176,)
+    return torch.cat([token_emb, pos_encoding], dim=0)
+
+# RND model input changes from 2048-D → 2176-D
+```
+
+**Shape Changes**:
+| Component | Position-Agnostic | Position-Aware |
+|-----------|------------------|----------------|
+| Token embedding | `(2048,)` | `(2048,)` |
+| Positional encoding | N/A | `(128,)` |
+| **RND input** | **`(2048,)`** | **`(2176,)`** |
+| RND output | `(512,)` | `(512,)` |
+
+**When Position-Aware Might Be Useful**:
+
+1. **Detecting spatial constraint violations**:
+   - Example: Object appears in physically impossible location (e.g., cup floating in air)
+   - Example: Robot gripper position deviates from expected trajectory
+
+2. **Task-specific spatial priors**:
+   - Tasks with strong spatial structure (e.g., "put item in top-left drawer")
+   - Detecting when object positions violate learned spatial distributions
+
+3. **Fine-grained OOD detection**:
+   - Combine both approaches: position-agnostic RND + position-aware RND
+   - Position-agnostic: "Is this object/texture novel?"
+   - Position-aware: "Is this spatial layout novel?"
+   - Aggregate both signals for comprehensive uncertainty
+
+**Trade-offs**:
+
+| Aspect | Position-Agnostic | Position-Aware |
+|--------|------------------|----------------|
+| **Spatial generalization** | ✅ Better | ⚠️ May penalize valid rearrangements |
+| **Detect feature novelty** | ✅ Yes | ✅ Yes |
+| **Detect spatial novelty** | ❌ No | ✅ Yes |
+| **False positive risk** | Lower | Higher (scene variations) |
+| **Model complexity** | Simpler (2048-D) | More complex (2176-D) |
+
+**Implementation Sketch** (for future work):
+
+```python
+# In data_collection.py
+def collect_position_aware_tokens(img_embs):
+    """
+    Args:
+        img_embs: (1, 256, 2048) - SigLIP embeddings
+    
+    Returns:
+        position_aware_tokens: (256, 2176) - With positional encodings
+    """
+    batch, num_tokens, emb_dim = img_embs.shape
+    tokens = img_embs[0]  # (256, 2048)
+    
+    # Add 2D sinusoidal positional encoding
+    pos_encodings = create_2d_sinusoidal_grid(
+        height=16, width=16, emb_dim=128, device=tokens.device
+    )  # (16, 16, 128)
+    pos_encodings = pos_encodings.view(256, 128)  # (256, 128)
+    
+    # Concatenate: (256, 2048) + (256, 128) = (256, 2176)
+    position_aware_tokens = torch.cat([tokens, pos_encodings], dim=1)
+    
+    return position_aware_tokens
+
+def create_2d_sinusoidal_grid(height, width, emb_dim, device):
+    """Create 2D sinusoidal positional encoding (Transformer-style)"""
+    # Generate position indices
+    y_pos = torch.arange(height, dtype=torch.float32, device=device)  # (16,)
+    x_pos = torch.arange(width, dtype=torch.float32, device=device)   # (16,)
+    
+    # Frequency bands
+    dim_t = torch.arange(emb_dim // 4, dtype=torch.float32, device=device)
+    dim_t = 10000 ** (2 * (dim_t // 2) / (emb_dim // 4))
+    
+    # Encode y and x separately (each gets emb_dim//2 dimensions)
+    pos_y = y_pos[:, None] / dim_t  # (16, emb_dim//4)
+    pos_x = x_pos[:, None] / dim_t  # (16, emb_dim//4)
+    
+    # Apply sin/cos
+    pos_y = torch.stack([torch.sin(pos_y), torch.cos(pos_y)], dim=2).flatten(1)  # (16, emb_dim//2)
+    pos_x = torch.stack([torch.sin(pos_x), torch.cos(pos_x)], dim=2).flatten(1)  # (16, emb_dim//2)
+    
+    # Combine: (height, width, emb_dim)
+    pos_encoding = torch.zeros(height, width, emb_dim, device=device)
+    pos_encoding[:, :, :emb_dim//2] = pos_y[:, None, :]  # Broadcast over width
+    pos_encoding[:, :, emb_dim//2:] = pos_x[None, :, :]  # Broadcast over height
+    
+    return pos_encoding  # (16, 16, 128)
+
+# RND model architecture change
+class RND_OE_PositionAware(nn.Module):
+    def __init__(self, input_dim=2176, output_size=512):  # 2048 + 128 = 2176
+        super().__init__()
+        self.target_network = nn.Sequential(
+            nn.Linear(2176, 1024), nn.LeakyReLU(),
+            nn.Linear(1024, 2048), nn.LeakyReLU(),
+            nn.Linear(2048, 4096), nn.LeakyReLU(),
+            nn.Linear(4096, output_size)
+        )
+        # ... (same for predictor_network)
+```
+
+**Experimental Validation Needed**:
+
+To decide whether position-aware RND is beneficial, measure:
+1. **False positive rate**: Does it flag valid scene rearrangements?
+2. **True positive rate**: Does it detect genuine spatial anomalies?
+3. **Correlation with success**: Does position-aware uncertainty better predict failure?
+4. **Comparison**: Position-agnostic vs position-aware vs combined
+
+**Recommendation**: Start with position-agnostic (current design), then experiment with position-aware if:
+- Analysis shows spatial layout is critical for failure prediction
+- Position-agnostic RND misses important spatial anomalies
+- Task-specific evaluation shows position matters more than expected
+
+---
+
+## �📚 References
 
 1. **FIPER Paper**: Römer et al. (2025). "Failure Prediction at Runtime for Generative Robot Policies." NeurIPS 2025.
    - arXiv: https://arxiv.org/abs/2510.09459
