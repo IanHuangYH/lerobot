@@ -583,6 +583,29 @@ def get_uncertainty_scores(self):
 
 ---
 
+### **Experimental Validation Plan** (for comparing options)
+
+To determine if alternative options (2 or 3) outperform the baseline (Option 1):
+
+**Metrics to Compare**:
+1. **False Positive Rate**: Does it flag valid scene variations as uncertain?
+2. **True Positive Rate**: Does it detect genuine failures before they occur?
+3. **Correlation with Success**: Pearson/Spearman correlation between uncertainty and task failure
+4. **Spatial Localization Quality** (Options 1-2 only): Do high-uncertainty regions align with failure causes?
+
+**Experimental Protocol**:
+1. Train all three RND variants on same training data
+2. Evaluate on held-out LIBERO episodes (success and failure cases)
+3. Compute uncertainty scores and compare against ground truth outcomes
+4. Analyze cases where each option succeeds/fails
+
+**Decision Criteria**:
+- If Option 2 significantly improves detection without excessive false positives → adopt position-aware
+- If Option 3 matches Option 1 performance → switch to mean-pooled for efficiency
+- If Option 1 is sufficient → keep as-is (simpler is better)
+
+---
+
 ## 🔧 File Structure (After Implementation)
 
 ```
@@ -624,163 +647,7 @@ lerobot/
 
 ---
 
-## � Future Considerations: Position-Aware RND
-
-### **Current Approach: Position-Agnostic**
-
-The current implementation uses **position-agnostic** token-level RND:
-- **Input**: Pure `2048-D` SigLIP token embeddings (semantic features only)
-- **Rationale**: VLAs are designed for spatial generalization - they should succeed even when objects are repositioned
-- **Benefit**: Avoids false positives from rearranged scenes (different object positions in same task type)
-- **Detection focus**: Novel objects, textures, or features (not spatial layout changes)
-
-### **Alternative Approach: Position-Aware RND**
-
-Position-aware RND could be explored in future work to detect spatial novelty:
-
-**Architecture**:
-```python
-# Add positional encoding to token embeddings
-def add_positional_encoding(token_emb, token_idx):
-    """
-    Args:
-        token_emb: (2048,) - SigLIP token embedding
-        token_idx: int - Token position (0-255)
-    
-    Returns:
-        position_aware_emb: (2176,) - [token_emb | pos_encoding]
-    """
-    # Convert token index to 2D grid position
-    row = token_idx // 16  # 0-15
-    col = token_idx % 16   # 0-15
-    
-    # Create learnable or fixed positional encoding (128-D)
-    # Option 1: Sinusoidal (like Transformer)
-    pos_encoding = create_2d_sinusoidal_encoding(row, col, dim=128)
-    
-    # Option 2: Learnable embedding
-    # pos_encoding = learned_pos_embedding[row, col]  # (128,)
-    
-    # Concatenate: (2048,) + (128,) = (2176,)
-    return torch.cat([token_emb, pos_encoding], dim=0)
-
-# RND model input changes from 2048-D → 2176-D
-```
-
-**Shape Changes**:
-| Component | Position-Agnostic | Position-Aware |
-|-----------|------------------|----------------|
-| Token embedding | `(2048,)` | `(2048,)` |
-| Positional encoding | N/A | `(128,)` |
-| **RND input** | **`(2048,)`** | **`(2176,)`** |
-| RND output | `(512,)` | `(512,)` |
-
-**When Position-Aware Might Be Useful**:
-
-1. **Detecting spatial constraint violations**:
-   - Example: Object appears in physically impossible location (e.g., cup floating in air)
-   - Example: Robot gripper position deviates from expected trajectory
-
-2. **Task-specific spatial priors**:
-   - Tasks with strong spatial structure (e.g., "put item in top-left drawer")
-   - Detecting when object positions violate learned spatial distributions
-
-3. **Fine-grained OOD detection**:
-   - Combine both approaches: position-agnostic RND + position-aware RND
-   - Position-agnostic: "Is this object/texture novel?"
-   - Position-aware: "Is this spatial layout novel?"
-   - Aggregate both signals for comprehensive uncertainty
-
-**Trade-offs**:
-
-| Aspect | Position-Agnostic | Position-Aware |
-|--------|------------------|----------------|
-| **Spatial generalization** | ✅ Better | ⚠️ May penalize valid rearrangements |
-| **Detect feature novelty** | ✅ Yes | ✅ Yes |
-| **Detect spatial novelty** | ❌ No | ✅ Yes |
-| **False positive risk** | Lower | Higher (scene variations) |
-| **Model complexity** | Simpler (2048-D) | More complex (2176-D) |
-
-**Implementation Sketch** (for future work):
-
-```python
-# In data_collection.py
-def collect_position_aware_tokens(img_embs):
-    """
-    Args:
-        img_embs: (1, 256, 2048) - SigLIP embeddings
-    
-    Returns:
-        position_aware_tokens: (256, 2176) - With positional encodings
-    """
-    batch, num_tokens, emb_dim = img_embs.shape
-    tokens = img_embs[0]  # (256, 2048)
-    
-    # Add 2D sinusoidal positional encoding
-    pos_encodings = create_2d_sinusoidal_grid(
-        height=16, width=16, emb_dim=128, device=tokens.device
-    )  # (16, 16, 128)
-    pos_encodings = pos_encodings.view(256, 128)  # (256, 128)
-    
-    # Concatenate: (256, 2048) + (256, 128) = (256, 2176)
-    position_aware_tokens = torch.cat([tokens, pos_encodings], dim=1)
-    
-    return position_aware_tokens
-
-def create_2d_sinusoidal_grid(height, width, emb_dim, device):
-    """Create 2D sinusoidal positional encoding (Transformer-style)"""
-    # Generate position indices
-    y_pos = torch.arange(height, dtype=torch.float32, device=device)  # (16,)
-    x_pos = torch.arange(width, dtype=torch.float32, device=device)   # (16,)
-    
-    # Frequency bands
-    dim_t = torch.arange(emb_dim // 4, dtype=torch.float32, device=device)
-    dim_t = 10000 ** (2 * (dim_t // 2) / (emb_dim // 4))
-    
-    # Encode y and x separately (each gets emb_dim//2 dimensions)
-    pos_y = y_pos[:, None] / dim_t  # (16, emb_dim//4)
-    pos_x = x_pos[:, None] / dim_t  # (16, emb_dim//4)
-    
-    # Apply sin/cos
-    pos_y = torch.stack([torch.sin(pos_y), torch.cos(pos_y)], dim=2).flatten(1)  # (16, emb_dim//2)
-    pos_x = torch.stack([torch.sin(pos_x), torch.cos(pos_x)], dim=2).flatten(1)  # (16, emb_dim//2)
-    
-    # Combine: (height, width, emb_dim)
-    pos_encoding = torch.zeros(height, width, emb_dim, device=device)
-    pos_encoding[:, :, :emb_dim//2] = pos_y[:, None, :]  # Broadcast over width
-    pos_encoding[:, :, emb_dim//2:] = pos_x[None, :, :]  # Broadcast over height
-    
-    return pos_encoding  # (16, 16, 128)
-
-# RND model architecture change
-class RND_OE_PositionAware(nn.Module):
-    def __init__(self, input_dim=2176, output_size=512):  # 2048 + 128 = 2176
-        super().__init__()
-        self.target_network = nn.Sequential(
-            nn.Linear(2176, 1024), nn.LeakyReLU(),
-            nn.Linear(1024, 2048), nn.LeakyReLU(),
-            nn.Linear(2048, 4096), nn.LeakyReLU(),
-            nn.Linear(4096, output_size)
-        )
-        # ... (same for predictor_network)
-```
-
-**Experimental Validation Needed**:
-
-To decide whether position-aware RND is beneficial, measure:
-1. **False positive rate**: Does it flag valid scene rearrangements?
-2. **True positive rate**: Does it detect genuine spatial anomalies?
-3. **Correlation with success**: Does position-aware uncertainty better predict failure?
-4. **Comparison**: Position-agnostic vs position-aware vs combined
-
-**Recommendation**: Start with position-agnostic (current design), then experiment with position-aware if:
-- Analysis shows spatial layout is critical for failure prediction
-- Position-agnostic RND misses important spatial anomalies
-- Task-specific evaluation shows position matters more than expected
-
----
-
-## �📚 References
+## 📚 References
 
 1. **FIPER Paper**: Römer et al. (2025). "Failure Prediction at Runtime for Generative Robot Policies." NeurIPS 2025.
    - arXiv: https://arxiv.org/abs/2510.09459
