@@ -86,7 +86,7 @@ We consider three alternative architectures for RND-based uncertainty quantifica
 - ✅ Training/inference distributions match exactly (both use individual tokens)
 - ✅ Enables spatial uncertainty heatmaps (which token regions are novel?)
 - ✅ VLA-aligned: Leverages spatial generalization (doesn't penalize object rearrangements)
-- ✅ Moderate dataset size with sampling: ~15.7 GB per task type
+- ✅ Moderate dataset size with sampling: ~70 GB per task type (all 500 episodes)
 
 **When It Detects Uncertainty**:
 - Novel objects (unseen textures, shapes, colors)
@@ -230,8 +230,8 @@ class RND_MeanPooled(nn.Module):
 | **RND Input Dimension** | 2048-D | 2176-D | 4096-D |
 | **Input Type** | Individual token | Token + position | Mean-pooled both cameras |
 | **Spatial Heatmap** | ✅ Yes | ✅ Yes | ❌ No |
-| **Dataset Size (per task)** | ~15.7 GB | ~17.0 GB | ~1.6 GB |
-| **Training Samples** | ~960K tokens | ~960K tokens | ~100K frames |
+| **Dataset Size (per task)** | ~70 GB | ~76 GB | ~1.1 GB |
+| **Training Samples** | ~8.77M tokens | ~8.77M tokens | ~68.5K frames |
 | **Inference Speed** | Medium (batched tokens) | Medium (batched tokens) | Fast (single forward) |
 | **Detects Feature Novelty** | ✅ Yes | ✅ Yes | ✅ Yes (global) |
 | **Detects Spatial Novelty** | ❌ No | ✅ Yes | ⚠️ Coarse-grained |
@@ -303,19 +303,26 @@ For Option 3: 4 RND models (one per task type, cameras combined) = **4 total mod
 
 #### **Sample 64 Tokens per Frame** (Option 1 & 2)
 
-**Full collection**:
-- 100 episodes × 150 frames × 256 tokens × 2 cameras = 7.68M tokens
-- 7.68M × 2048 × 4 bytes ≈ **61 GB** per task type
+**LIBERO Dataset Structure**:
+- 10 task files per type × 50 demos per file = **500 episodes per task type**
+- Average episode length: ~137 frames
+- Total frames per task type: ~68,500 frames
+
+**Full collection** (all tokens):
+- 500 episodes × 137 frames × 256 tokens × 2 cameras = 35.1M tokens
+- 35.1M × 2048 × 4 bytes ≈ **280 GB** per task type
 
 **Sampled collection** (64 tokens):
-- 100 episodes × 150 frames × 64 tokens × 2 cameras = 1.92M tokens
-- 1.92M × 2048 × 4 bytes ≈ **15.7 GB** per task type
+- 500 episodes × 137 frames × 64 tokens × 2 cameras = 8.77M tokens
+- 8.77M × 2048 × 4 bytes ≈ **70 GB** per task type
 
 **Trade-off**: 75% storage reduction while preserving token-level variance
 
 **Option 3 (no sampling needed)**:
-- 100 episodes × 150 frames × 1 vector × 4096-D = 100K vectors
-- 100K × 4096 × 4 bytes ≈ **1.6 GB** per task type (smallest)
+- 500 episodes × 137 frames × 1 vector × 4096-D = 68.5K vectors
+- 68.5K × 4096 × 4 bytes ≈ **1.1 GB** per task type (smallest)
+
+**Configurable**: The data collection script supports `--num-episodes` to use fewer episodes if needed (e.g., 100 for faster experimentation)
 
 ---
 
@@ -327,19 +334,26 @@ For Option 3: 4 RND models (one per task type, cameras combined) = **4 total mod
 lerobot/uncertainty_quantification/rnd_dataset/
 ├── spatial/
 │   ├── agentview_tokens.pt       # Shape: (N, 2048)
-│   └── wrist_tokens.pt           # Shape: (N, 2048)
+│   ├── wrist_tokens.pt           # Shape: (N, 2048)
+│   └── collection_stats.json     # Collection metadata
 ├── object/
 │   ├── agentview_tokens.pt
-│   └── wrist_tokens.pt
+│   ├── wrist_tokens.pt
+│   └── collection_stats.json
 ├── goal/
 │   ├── agentview_tokens.pt
-│   └── wrist_tokens.pt
+│   ├── wrist_tokens.pt
+│   └── collection_stats.json
 └── long/
     ├── agentview_tokens.pt
-    └── wrist_tokens.pt
+    ├── wrist_tokens.pt
+    └── collection_stats.json
 
-# N ≈ 100 episodes × 150 frames × 64 sampled tokens = 960K tokens per camera
-# File size: ~7.8 GB per camera per task type
+# With default settings (all 500 episodes, 64 tokens sampled):
+# N ≈ 500 episodes × 137 frames × 64 sampled tokens = 4.38M tokens per camera
+# File size: ~35 GB per camera per task type
+#
+# Configurable via --num-episodes flag (e.g., 100 episodes → 877K tokens, ~7 GB)
 ```
 
 ### **Trained RND Models**
@@ -400,7 +414,7 @@ eval_logs/{eval_name}/uncertainty/
 | Vision encoder output | `img_embs` | `(1, 256, 2048)` | Per camera |
 | Sample tokens | `sampled_tokens` | `(64, 2048)` | Random subset |
 | Save to dataset | `token` | `(2048,)` | Individual embedding |
-| Full dataset | `tokens` | `(960K, 2048)` | All sampled tokens |
+| Full dataset | `tokens` | `(4.38M, 2048)` | All sampled tokens (default: 500 episodes) |
 | **RND Training** |
 | RND input | `token_emb` | `(2048,)` | Single token |
 | Target output | `target_feat` | `(512,)` | Random network output |
@@ -449,23 +463,54 @@ nn.Sequential(
 **Goal**: Extract and save token embeddings from LIBERO demonstrations
 
 **Steps**:
-1. Check if LIBERO is download (third_party/LIBERO/datasets). If not, download LIBERO demonstration datasets (100 episodes per task type)
-2. Create data collection script: `uncertainty_quantification/scripts/collect_rnd_training_data.py`
-3. For each frame:
-   - Load Pi0.5 policy (frozen, evaluation mode)
-   - Extract SigLIP embeddings via `embed_prefix()`
-   - provide flag for Sample 64 random tokens or sample full tokens per camera
+1. Check if LIBERO is downloaded (third_party/LIBERO/datasets)
+   - Expected: 10 demo files per task type, 50 episodes per file = **500 episodes total**
+2. Load Pi0.5 policy (frozen, evaluation mode)
+3. For each frame in each episode:
+   - Extract SigLIP embeddings via vision encoder
+   - Sample 64 random tokens per camera (configurable)
    - Save as individual `(2048,)` vectors
-4. Save datasets per task type and camera
+4. Save concatenated datasets per task type and camera
 
-**Output**:
-- `uncertainty_quantification/rnd_dataset/{task_type}/{camera}_tokens.pt`
-- ~15.7 GB per task type (4 task types → ~63 GB total)
+**Output** (with default settings: all 500 episodes, 64 tokens sampled):
+- `uncertainty_quantification/rnd_dataset/{task_type}/agentview_tokens.pt` (~35 GB)
+- `uncertainty_quantification/rnd_dataset/{task_type}/wrist_tokens.pt` (~35 GB)
+- `uncertainty_quantification/rnd_dataset/{task_type}/collection_stats.json`
+- **Total size per task type**: ~70 GB (4 task types → ~280 GB total)
 
-**Files to Create**:
-- `lerobot/uncertainty_quantification/data_collection.py` - Core extraction logic
+**Usage**:
+```bash
+# Collect data for spatial task type (all 500 episodes)
+python -m uncertainty_quantification.scripts.collect_rnd_training_data \
+  --task-type spatial \
+  --tokens-per-frame 64
+
+# Use fewer episodes for faster experimentation
+python -m uncertainty_quantification.scripts.collect_rnd_training_data \
+  --task-type spatial \
+  --num-episodes 100 \
+  --tokens-per-frame 64
+
+# Save all 256 tokens (no sampling)
+python -m uncertainty_quantification.scripts.collect_rnd_training_data \
+  --task-type spatial \
+  --save-full-tokens
+```
+
+**Configuration Options**:
+- `--task-type`: Choose from `spatial`, `object`, `goal`, `long`
+- `--num-episodes`: Number of episodes to use (default: `None` = all ~500)
+- `--tokens-per-frame`: Tokens to sample per camera (default: `64`)
+- `--save-full-tokens`: Save all 256 tokens instead of sampling
+- `--libero-dataset-dir`: Path to LIBERO datasets (default: `third_party/LIBERO/datasets`)
+- `--output-dir`: Output directory (default: `uncertainty_quantification/rnd_dataset`)
+- `--policy-path`: Pi0.5 checkpoint (default: `pi-0-5-preview`)
+
+**Files Created**: ✅
+- `lerobot/uncertainty_quantification/dataset/data_collection.py` - Core extraction logic
 - `lerobot/uncertainty_quantification/scripts/collect_rnd_training_data.py` - CLI script
 - `lerobot/uncertainty_quantification/configs/rnd_data_collection.yaml` - Configuration
+- `lerobot/uncertainty_quantification/test/test_data_collection.sh` - Test script (2 episodes)
 
 ---
 
@@ -613,19 +658,24 @@ lerobot/
 ├── uncertainty_quantification/
 │   ├── README.md                    # This file
 │   ├── __init__.py
-│   ├── data_collection.py           # Phase 1: Extract embeddings
-│   ├── visualization.py             # Phase 4: Create heatmaps
-│   └── rnd/
-│       ├── __init__.py
-│       ├── rnd_models.py            # Adapted from fiper_template
-│       ├── rnd_trainer.py           # Training logic
-│       └── utils.py
-├── scripts/
-│   ├── collect_rnd_training_data.py # Phase 1 CLI
-│   └── train_rnd.py                 # Phase 2 CLI
-├── configs/
-│   ├── rnd_data_collection.yaml
-│   └── rnd_training.yaml
+│   ├── configs/
+│   │   ├── rnd_data_collection.yaml
+│   │   └── rnd_training.yaml
+│   ├── dataset/
+│   │   ├── __init__.py
+│   │   └── data_collection.py       # Phase 1: Extract embeddings
+│   ├── scripts/
+│   │   ├── collect_rnd_training_data.py # Phase 1 CLI
+│   │   ├── collect_all_tasks.sh         # Batch collection
+│   │   └── train_rnd.py                 # Phase 2 CLI
+│   ├── test/
+│   │   └── test_data_collection.sh      # Test script
+│   ├── rnd/
+│   │   ├── __init__.py
+│   │   ├── rnd_models.py            # Adapted from fiper_template
+│   │   ├── rnd_trainer.py           # Training logic
+│   │   └── utils.py
+│   └── visualization.py             # Phase 4: Create heatmaps
 ├── data/
 │   ├── rnd_training/
 │   │   ├── spatial/
@@ -689,7 +739,7 @@ rnd:
 
 ## 🎯 Success Metrics
 
-1. **Data Collection**: Successfully extract ~960K tokens per camera per task type
+1. **Data Collection**: Successfully extract ~4.38M tokens per camera per task type (500 episodes)
 2. **Training**: RND converges (predictor MSE stabilizes)
 3. **Inference**: Uncertainty scores correlate with task success/failure
 4. **Visualization**: Clear spatial heatmaps showing high uncertainty in relevant regions
@@ -701,11 +751,15 @@ rnd:
 
 1. ✅ Create folder structure
 2. ✅ Document design decisions (this file)
-3. ⏭️ **Start Phase 1**: Implement data collection script
-4. ⏭️ **Phase 2**: Train RND models
-5. ⏭️ **Phase 3**: Integrate into evaluation pipeline
-6. ⏭️ **Phase 4**: Create visualization tools
+3. ✅ **Phase 1**: Implement data collection script
+   - ✅ Core logic (`data_collection.py`)
+   - ✅ CLI script (`scripts/collect_rnd_training_data.py`)
+   - ✅ Configuration file (`configs/rnd_data_collection.yaml`)
+4. ⏭️ **Phase 1 Execution**: Run data collection on all task types
+5. ⏭️ **Phase 2**: Train RND models
+6. ⏭️ **Phase 3**: Integrate into evaluation pipeline
+7. ⏭️ **Phase 4**: Create visualization tools
 
 ---
 
-**Last Updated**: February 22, 2026
+**Last Updated**: February 23, 2026

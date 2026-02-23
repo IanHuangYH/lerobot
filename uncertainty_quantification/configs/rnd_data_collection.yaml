@@ -1,0 +1,57 @@
+# RND Data Collection Configuration
+
+# Task types to collect (choose from: spatial, object, goal, long)
+task_types:
+  - spatial
+  - object
+  - goal
+  # - long  # Uncomment if libero_long dataset is available
+
+# Data collection settings
+data_collection:
+  # Number of episodes to use per task type
+  # null means use all available episodes (~500 per task type)
+  # Set to specific number (e.g., 100) to use fewer episodes
+  num_episodes: null  # null = use all ~500 episodes
+  
+  # Number of tokens to sample per camera per frame
+  # Recommended: 64 for balance between dataset size and variance
+  # Set to 256 to save all tokens (no sampling)
+  tokens_per_frame: 64
+  
+  # Whether to save full tokens (256) instead of sampling
+  # If true, overrides tokens_per_frame
+  save_full_tokens: false
+
+# Paths
+paths:
+  # Path to LIBERO datasets directory
+  libero_dataset_dir: "third_party/LIBERO/datasets"
+  
+  # Output directory for collected RND datasets
+  output_dir: "uncertainty_quantification/rnd_dataset"
+  
+  # Pi0.5 policy checkpoint (HuggingFace ID or local path)
+  policy_path: "lerobot/pi05_libero_finetuned"
+
+# Device configuration
+device: "cuda"  # or "cpu"
+
+# Expected dataset statistics (for reference)
+# With 500 episodes per task type:
+expected_stats:
+  episodes_per_task: 500  # 10 files × 50 demos each
+  avg_frames_per_episode: 137
+  total_frames_per_task: 68500  # 500 × 137
+  
+  # With 64 tokens sampled per frame
+  with_sampling:
+    tokens_per_camera: 4384000  # 68500 × 64
+    dataset_size_per_camera_gb: 35.0  # 4384000 × 2048 × 4 bytes
+    total_size_per_task_gb: 70.0  # Both cameras
+    
+  # With full 256 tokens per frame
+  without_sampling:
+    tokens_per_camera: 17536000  # 68500 × 256
+    dataset_size_per_camera_gb: 140.0
+    total_size_per_task_gb: 280.0
