@@ -18,10 +18,11 @@ if command -v module &> /dev/null; then
 fi
 
 # Configuration
-TASK_TYPES=("spatial" "object" "goal")
+TASK_TYPES=("object")
 NUM_EPISODES=""  # Empty = use all episodes (~500 each)
-TOKENS_PER_FRAME=""  # Empty = save all 256 tokens, or set a number (e.g., 64) to sample
-GPU_ID="cuda:0"  # Empty = use default cuda, or set to specific GPU (e.g., "cuda:0", "cuda:1")
+TOKENS_PER_FRAME=""  # Number of tokens to sample (64 recommended, or "" for all 256 tokens)
+MAX_FRAMES_PER_CHUNK="2000"  # Frames per chunk file (controls memory usage)
+GPU_ID="cuda:0"  # GPU device to use (e.g., "cuda:0", "cuda:1")
 OUTPUT_DIR="uncertainty_quantification/rnd_dataset"
 
 # if output_dir already exists, prompt to stop the script to avoid overwriting data
@@ -31,28 +32,37 @@ if [ -d "$OUTPUT_DIR" ]; then
 fi
 
 
-# Determine collection mode
+# Determine collection mode and estimate sizes
+NUM_TASKS=${#TASK_TYPES[@]}
 if [ -z "$TOKENS_PER_FRAME" ]; then
-    COLLECTION_MODE="ALL (256) - no sampling"
-    EXPECTED_SIZE_PER_TASK="~280 GB"
-    TOTAL_SIZE="~840 GB"
+    COLLECTION_MODE="ALL (256 tokens) - no sampling"
+    # With 256 tokens: 2000 frames × 256 tokens × 2 cameras × 2048 × 4 bytes ≈ 8 GB per chunk
+    CHUNK_SIZE_GB="~8"
+    # Approx 35 chunks per task (68,500 frames / 2000)
+    EXPECTED_SIZE_PER_TASK="~280 GB (35 chunks of ~8 GB)"
+    TOTAL_SIZE_GB=$((280 * NUM_TASKS))
+    TOTAL_SIZE="~${TOTAL_SIZE_GB} GB"
 else
-    COLLECTION_MODE="$TOKENS_PER_FRAME (sampled)"
-    # Rough estimate: 280 GB / 4 = 70 GB for 64 tokens
-    SIZE_FACTOR=$(echo "scale=0; 280 * $TOKENS_PER_FRAME / 256" | bc)
-    EXPECTED_SIZE_PER_TASK="~${SIZE_FACTOR} GB"
-    TOTAL_SIZE="~$(echo "$SIZE_FACTOR * 3" | bc) GB"
+    COLLECTION_MODE="$TOKENS_PER_FRAME tokens (sampled)"
+    # With 64 tokens: 2000 frames × 64 tokens × 2 cameras × 2048 × 4 bytes ≈ 2 GB per chunk
+    CHUNK_SIZE_GB="~2"
+    # Approx 35 chunks per task
+    EXPECTED_SIZE_PER_TASK="~70 GB (35 chunks of ~2 GB)"
+    TOTAL_SIZE_GB=$((70 * NUM_TASKS))
+    TOTAL_SIZE="~${TOTAL_SIZE_GB} GB"
 fi
 
 echo "Configuration:"
 echo "  Task types: ${TASK_TYPES[@]}"
 echo "  Episodes per task: ALL (~500)"
 echo "  Tokens per frame: $COLLECTION_MODE"
+echo "  Max frames per chunk: $MAX_FRAMES_PER_CHUNK"
+echo "  Chunk size: $CHUNK_SIZE_GB"
 if [ -n "$GPU_ID" ]; then
     echo "  GPU Device: $GPU_ID"
 fi
-echo "  Expected size: $EXPECTED_SIZE_PER_TASK per task type"
-echo "  Total expected size: $TOTAL_SIZE (for 3 task types)"
+echo "  Expected size per task: $EXPECTED_SIZE_PER_TASK"
+echo "  Total expected size: $TOTAL_SIZE (for ${NUM_TASKS} task type(s))"
 echo "  Output dir: $OUTPUT_DIR"
 echo ""
 
@@ -73,19 +83,25 @@ for TASK_TYPE in "${TASK_TYPES[@]}"; do
     echo "Collecting: $TASK_TYPE"
     echo "=================================================="
     
+    # Build command with all arguments
+    CMD="python -m uncertainty_quantification.scripts.collect_rnd_training_data"
+    CMD="$CMD --task-type $TASK_TYPE"
+    CMD="$CMD --output-dir $OUTPUT_DIR"
+    CMD="$CMD --max-frames-per-chunk $MAX_FRAMES_PER_CHUNK"
+    
+    if [ -n "$GPU_ID" ]; then
+        CMD="$CMD --device $GPU_ID"
+    fi
+    
     if [ -z "$TOKENS_PER_FRAME" ]; then
         # Save all 256 tokens (no sampling)
-        python -m uncertainty_quantification.scripts.collect_rnd_training_data \
-            --task-type "$TASK_TYPE" \
-            --save-full-tokens \
-            --output-dir "$OUTPUT_DIR"
+        CMD="$CMD --save-full-tokens"
     else
         # Sample specified number of tokens
-        python -m uncertainty_quantification.scripts.collect_rnd_training_data \
-            --task-type "$TASK_TYPE" \
-            --tokens-per-frame "$TOKENS_PER_FRAME" \
-            --output-dir "$OUTPUT_DIR"
+        CMD="$CMD --tokens-per-frame $TOKENS_PER_FRAME"
     fi
+    
+    eval $CMD
     
     echo ""
     echo "✅ Completed: $TASK_TYPE"

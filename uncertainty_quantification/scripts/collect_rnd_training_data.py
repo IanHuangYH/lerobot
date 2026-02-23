@@ -51,6 +51,12 @@ def main():
         help="Number of tokens to sample per camera per frame (default: 64)"
     )
     parser.add_argument(
+        "--max-frames-per-chunk",
+        type=int,
+        default=2000,
+        help="Maximum frames per chunk file - controls memory usage (default: 2000, ~2GB chunks for 64 tokens, ~8GB for 256 tokens)"
+    )
+    parser.add_argument(
         "--save-full-tokens",
         action="store_true",
         help="Save all 256 tokens instead of sampling (overrides --tokens-per-frame)"
@@ -141,6 +147,7 @@ def main():
         output_dir=args.output_dir,
         num_episodes=args.num_episodes,
         tokens_per_frame=args.tokens_per_frame,
+        max_frames_per_chunk=args.max_frames_per_chunk,
         device=args.device,
         save_full_tokens=args.save_full_tokens,
     )
@@ -149,15 +156,20 @@ def main():
     logger.info("Collection Complete!")
     logger.info(f"  Total episodes: {stats['total_episodes']}")
     logger.info(f"  Total frames: {stats['total_frames']}")
+    logger.info(f"  Number of chunks: {stats['num_chunks']}")
+    logger.info(f"  Tokens per frame: {stats['tokens_per_frame']}")
     logger.info(f"  Total tokens (agentview): {stats['total_tokens_agentview']:,}")
     logger.info(f"  Total tokens (wrist): {stats['total_tokens_wrist']:,}")
     
     # Calculate dataset sizes
-    agentview_size_gb = stats['total_tokens_agentview'] * 2048 * 4 / (1024**3)
-    wrist_size_gb = stats['total_tokens_wrist'] * 2048 * 4 / (1024**3)
+    tokens_per_chunk = stats['max_frames_per_chunk'] * stats['tokens_per_frame']
+    chunk_size_gb = tokens_per_chunk * 2048 * 4 / (1024**3)
+    agentview_size_gb = stats['num_chunks'] * chunk_size_gb
+    wrist_size_gb = stats['num_chunks'] * chunk_size_gb
     total_size_gb = agentview_size_gb + wrist_size_gb
     
-    logger.info(f"  Dataset size: {total_size_gb:.2f} GB")
+    logger.info(f"  Approximate chunk size: {chunk_size_gb:.2f} GB")
+    logger.info(f"  Approximate total size: {total_size_gb:.2f} GB")
     logger.info(f"    - Agentview: {agentview_size_gb:.2f} GB")
     logger.info(f"    - Wrist: {wrist_size_gb:.2f} GB")
     logger.info("="*60)
