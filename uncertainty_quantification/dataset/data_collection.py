@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 def extract_siglip_embeddings(
     policy,
     images_dict: Dict[str, np.ndarray],
+    expected_image_keys: List[str] = None,
     device: str = "cuda",
 ) -> Dict[str, torch.Tensor]:
     """
@@ -31,6 +32,8 @@ def extract_siglip_embeddings(
         images_dict: Dictionary mapping camera names to images
             Expected keys: 'agentview_rgb', 'eye_in_hand_rgb'
             Image shape: (H, W, C) in uint8 [0, 255]
+        expected_image_keys: List of keys the policy expects for images.
+            If None, defaults to ['image', 'image2']
         device: Device to run inference on
         
     Returns:
@@ -40,15 +43,23 @@ def extract_siglip_embeddings(
             'wrist': torch.Tensor of shape (1, 256, 2048)
         }
     """
-    # Map LIBERO camera names to Pi0.5 expected names
+    # Use default keys if not provided
+    if expected_image_keys is None:
+        expected_image_keys = ['image', 'image2']
+    
+    # Map LIBERO camera names to expected keys
+    # Assume first key is agentview, second is wrist (eye_in_hand)
+    if len(expected_image_keys) < 2:
+        raise ValueError(f"Need at least 2 image keys, got {len(expected_image_keys)}")
+    
     camera_mapping = {
-        'agentview_rgb': 'image',
-        'eye_in_hand_rgb': 'image2',
+        'agentview_rgb': expected_image_keys[0],
+        'eye_in_hand_rgb': expected_image_keys[1],
     }
     
     # Prepare batch dictionary for Pi0.5
     batch = {}
-    for libero_cam, pi05_cam in camera_mapping.items():
+    for libero_cam, policy_key in camera_mapping.items():
         if libero_cam not in images_dict:
             raise ValueError(f"Missing camera {libero_cam} in images_dict")
         
@@ -63,7 +74,7 @@ def extract_siglip_embeddings(
         # Convert to channels-first: (1, H, W, C) -> (1, C, H, W)
         img_tensor = img_tensor.permute(0, 3, 1, 2)
         
-        batch[pi05_cam] = img_tensor.to(device)
+        batch[policy_key] = img_tensor.to(device)
     
     # Extract embeddings using Pi0.5's preprocessing and vision encoder
     with torch.no_grad():
@@ -189,6 +200,10 @@ def collect_rnd_dataset(
     logger.info(f"Collecting RND dataset for task type: {task_type}")
     logger.info(f"Tokens per frame: {tokens_per_frame if not save_full_tokens else 256}")
     
+    # Get expected image keys from policy config
+    expected_image_keys = list(policy.config.image_features.keys())
+    logger.info(f"Using image feature keys from policy: {expected_image_keys}")
+    
     # Setup paths
     task_dir = libero_dataset_dir / f"libero_{task_type}"
     if not task_dir.exists():
@@ -230,7 +245,9 @@ def collect_rnd_dataset(
                 }
                 
                 # Extract embeddings
-                embeddings = extract_siglip_embeddings(policy, images_dict, device)
+                embeddings = extract_siglip_embeddings(
+                    policy, images_dict, expected_image_keys, device
+                )
                 
                 # Sample or save full tokens
                 for cam_name, emb in embeddings.items():

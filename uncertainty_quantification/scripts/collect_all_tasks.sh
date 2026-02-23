@@ -12,6 +12,7 @@ echo ""
 TASK_TYPES=("spatial" "object" "goal")
 NUM_EPISODES=""  # Empty = use all episodes (~500 each)
 TOKENS_PER_FRAME=""  # Empty = save all 256 tokens, or set a number (e.g., 64) to sample
+GPU_ID="cuda:0"  # Empty = use default cuda, or set to specific GPU (e.g., "cuda:0", "cuda:1")
 
 # Determine collection mode
 if [ -z "$TOKENS_PER_FRAME" ]; then
@@ -30,6 +31,9 @@ echo "Configuration:"
 echo "  Task types: ${TASK_TYPES[@]}"
 echo "  Episodes per task: ALL (~500)"
 echo "  Tokens per frame: $COLLECTION_MODE"
+if [ -n "$GPU_ID" ]; then
+    echo "  GPU Device: $GPU_ID"
+fi
 echo "  Expected size: $EXPECTED_SIZE_PER_TASK per task type"
 echo "  Total expected size: $TOTAL_SIZE (for 3 task types)"
 echo ""

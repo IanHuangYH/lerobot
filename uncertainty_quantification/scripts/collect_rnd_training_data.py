@@ -81,7 +81,7 @@ def main():
         "--device",
         type=str,
         default="cuda" if torch.cuda.is_available() else "cpu",
-        help="Device to run inference on (default: cuda if available)"
+        help="Device to run inference on. Examples: 'cuda', 'cuda:0', 'cuda:1', 'cpu' (default: cuda if available)"
     )
     
     args = parser.parse_args()
@@ -96,6 +96,22 @@ def main():
     logger.info(f"Number of episodes: {args.num_episodes if args.num_episodes else 'ALL (~500)'}")
     logger.info(f"Tokens per frame: {256 if args.save_full_tokens else args.tokens_per_frame}")
     logger.info(f"Device: {args.device}")
+    
+    # Show GPU information if using CUDA
+    if "cuda" in args.device.lower():
+        if torch.cuda.is_available():
+            device_id = args.device.split(":")[-1] if ":" in args.device else "0"
+            if device_id.isdigit():
+                gpu_id = int(device_id)
+                if gpu_id < torch.cuda.device_count():
+                    gpu_name = torch.cuda.get_device_name(gpu_id)
+                    logger.info(f"GPU: {gpu_name} (ID: {gpu_id})")
+                else:
+                    logger.warning(f"GPU {gpu_id} requested but only {torch.cuda.device_count()} GPUs available")
+        else:
+            logger.warning("CUDA requested but not available, will use CPU")
+            args.device = "cpu"
+    
     logger.info(f"LIBERO dataset: {args.libero_dataset_dir}")
     logger.info(f"Output directory: {args.output_dir}")
     logger.info("="*60)
@@ -103,6 +119,11 @@ def main():
     # Load Pi0.5 policy
     logger.info(f"Loading Pi0.5 policy from: {args.policy_path}")
     policy = PI05Policy.from_pretrained(args.policy_path)
+    
+    # Log the expected image feature keys from the policy config
+    expected_image_keys = list(policy.config.image_features.keys())
+    logger.info(f"Policy expects image keys: {expected_image_keys}")
+    
     policy.eval()
     policy.to(args.device)
     

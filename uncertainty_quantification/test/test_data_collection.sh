@@ -13,6 +13,7 @@ TASK_TYPE="spatial"
 NUM_EPISODES=2  # Test with just 2 episodes
 TOKENS_PER_FRAME=64
 OUTPUT_DIR="uncertainty_quantification/rnd_dataset_test"
+GPU_ID="cuda:0"  # Uncomment to specify GPU (e.g., cuda:0, cuda:1, cuda:2)
 
 echo "Test Configuration:"
 echo "  Task type: $TASK_TYPE"
@@ -31,11 +32,20 @@ fi
 echo "Running data collection..."
 echo ""
 
-python -m uncertainty_quantification.scripts.collect_rnd_training_data \
-    --task-type "$TASK_TYPE" \
-    --num-episodes "$NUM_EPISODES" \
-    --tokens-per-frame "$TOKENS_PER_FRAME" \
-    --output-dir "$OUTPUT_DIR"
+if [ -n "$GPU_ID" ]; then
+    python -m uncertainty_quantification.scripts.collect_rnd_training_data \
+        --task-type "$TASK_TYPE" \
+        --num-episodes "$NUM_EPISODES" \
+        --tokens-per-frame "$TOKENS_PER_FRAME" \
+        --output-dir "$OUTPUT_DIR" \
+        --device "$GPU_ID"
+else
+    python -m uncertainty_quantification.scripts.collect_rnd_training_data \
+        --task-type "$TASK_TYPE" \
+        --num-episodes "$NUM_EPISODES" \
+        --tokens-per-frame "$TOKENS_PER_FRAME" \
+        --output-dir "$OUTPUT_DIR"
+fi
 
 echo ""
 echo "=================================================="
