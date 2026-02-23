@@ -8,11 +8,28 @@ echo "RND Training Data Collection - All Task Types"
 echo "=================================================="
 echo ""
 
+# Initialize conda for module-based systems
+if command -v module &> /dev/null; then
+    module load Anaconda
+    source /sq/shares/opt/anaconda3/2025.12.1/etc/profile.d/conda.sh
+    conda deactivate
+    conda activate lerobot
+    echo "✓ Conda environment activated: $(conda info --envs | grep '*')"
+fi
+
 # Configuration
 TASK_TYPES=("spatial" "object" "goal")
 NUM_EPISODES=""  # Empty = use all episodes (~500 each)
 TOKENS_PER_FRAME=""  # Empty = save all 256 tokens, or set a number (e.g., 64) to sample
 GPU_ID="cuda:0"  # Empty = use default cuda, or set to specific GPU (e.g., "cuda:0", "cuda:1")
+OUTPUT_DIR="uncertainty_quantification/rnd_dataset"
+
+# if output_dir already exists, prompt to stop the script to avoid overwriting data
+if [ -d "$OUTPUT_DIR" ]; then
+    echo "the output directory already exists. Please remove it manually or choose a different output directory."
+    exit 1
+fi
+
 
 # Determine collection mode
 if [ -z "$TOKENS_PER_FRAME" ]; then
@@ -36,6 +53,7 @@ if [ -n "$GPU_ID" ]; then
 fi
 echo "  Expected size: $EXPECTED_SIZE_PER_TASK per task type"
 echo "  Total expected size: $TOTAL_SIZE (for 3 task types)"
+echo "  Output dir: $OUTPUT_DIR"
 echo ""
 
 read -p "Continue with full data collection? (y/n): " -n 1 -r
@@ -59,12 +77,14 @@ for TASK_TYPE in "${TASK_TYPES[@]}"; do
         # Save all 256 tokens (no sampling)
         python -m uncertainty_quantification.scripts.collect_rnd_training_data \
             --task-type "$TASK_TYPE" \
-            --save-full-tokens
+            --save-full-tokens \
+            --output-dir "$OUTPUT_DIR"
     else
         # Sample specified number of tokens
         python -m uncertainty_quantification.scripts.collect_rnd_training_data \
             --task-type "$TASK_TYPE" \
-            --tokens-per-frame "$TOKENS_PER_FRAME"
+            --tokens-per-frame "$TOKENS_PER_FRAME" \
+            --output-dir "$OUTPUT_DIR"
     fi
     
     echo ""

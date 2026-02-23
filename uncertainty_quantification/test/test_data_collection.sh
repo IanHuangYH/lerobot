@@ -3,6 +3,15 @@
 
 set -e  # Exit on error
 
+# Initialize conda for module-based systems
+if command -v module &> /dev/null; then
+    module load Anaconda
+    source /sq/shares/opt/anaconda3/2025.12.1/etc/profile.d/conda.sh
+    conda deactivate
+    conda activate lerobot
+    echo "✓ Conda environment activated: $(conda info --envs | grep '*')"
+fi
+
 echo "=================================================="
 echo "Testing RND Data Collection (Small Sample)"
 echo "=================================================="
