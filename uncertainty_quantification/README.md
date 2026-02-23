@@ -324,7 +324,7 @@ For Option 3: 4 RND models (one per task type, cameras combined) = **4 total mod
 ### **Training Dataset** (per task type)
 
 ```
-lerobot/data/rnd_training/
+lerobot/uncertainty_quantification/rnd_dataset/
 ├── spatial/
 │   ├── agentview_tokens.pt       # Shape: (N, 2048)
 │   └── wrist_tokens.pt           # Shape: (N, 2048)
@@ -345,7 +345,7 @@ lerobot/data/rnd_training/
 ### **Trained RND Models**
 
 ```
-lerobot/data/rnd_models/
+lerobot/uncertainty_quantification/rnd_save_models/
 ├── spatial_agentview_rnd.ckpt
 ├── spatial_wrist_rnd.ckpt
 ├── object_agentview_rnd.ckpt
@@ -449,23 +449,23 @@ nn.Sequential(
 **Goal**: Extract and save token embeddings from LIBERO demonstrations
 
 **Steps**:
-1. Download LIBERO demonstration datasets (100 episodes per task type)
-2. Create data collection script: `scripts/collect_rnd_training_data.py`
+1. Check if LIBERO is download (third_party/LIBERO/datasets). If not, download LIBERO demonstration datasets (100 episodes per task type)
+2. Create data collection script: `uncertainty_quantification/scripts/collect_rnd_training_data.py`
 3. For each frame:
    - Load Pi0.5 policy (frozen, evaluation mode)
    - Extract SigLIP embeddings via `embed_prefix()`
-   - Sample 64 random tokens per camera
+   - provide flag for Sample 64 random tokens or sample full tokens per camera
    - Save as individual `(2048,)` vectors
 4. Save datasets per task type and camera
 
 **Output**:
-- `data/rnd_training/{task_type}/{camera}_tokens.pt`
+- `uncertainty_quantification/rnd_dataset/{task_type}/{camera}_tokens.pt`
 - ~15.7 GB per task type (4 task types → ~63 GB total)
 
 **Files to Create**:
 - `lerobot/uncertainty_quantification/data_collection.py` - Core extraction logic
-- `lerobot/scripts/collect_rnd_training_data.py` - CLI script
-- `lerobot/configs/rnd_data_collection.yaml` - Configuration
+- `lerobot/uncertainty_quantification/scripts/collect_rnd_training_data.py` - CLI script
+- `lerobot/uncertainty_quantification/configs/rnd_data_collection.yaml` - Configuration
 
 ---
 
@@ -492,13 +492,13 @@ nn.Sequential(
 - Loss: MSE
 
 **Output**:
-- `data/rnd_models/{task_type}_{camera}_rnd.ckpt`
+- `uncertainty_quantification/rnd_save_models/{task_type}_{camera}_rnd.ckpt`
 - 8 model files (each ~50-100 MB)
 
 **Files to Create**:
-- `lerobot/uncertainty_quantification/rnd/` - RND model code
-- `lerobot/scripts/train_rnd.py` - Training script
-- `lerobot/configs/rnd_training.yaml` - Training config
+- `lerobot/uncertainty_quantification/rnd_models/` - RND model code
+- `lerobot/uncertainty_quantification/scripts/train_rnd.py` - Training script
+- `lerobot/uncertainty_quantification/configs/rnd_training.yaml` - Training config
 
 ---
 
@@ -577,9 +577,9 @@ def get_uncertainty_scores(self):
   - `episode_XXXXX/uncertainty_timeline.png`
 
 **Files to Create**:
-- `lerobot/uncertainty_quantification/visualization.py`
-- `lerobot/pi_setting/eval/verify_uncertainty_video_alignment.py`
-- `lerobot/pi_setting/eval/run_verify_uncertainty_video_alignment.sh`
+- `lerobot/uncertainty_quantification/script/visualization.py`
+- `lerobot/uncertainty_quantification/script/verify_uncertainty_video_alignment.py`
+- `lerobot/uncertainty_quantification/script/run_verify_uncertainty_video_alignment.sh`
 
 ---
 
