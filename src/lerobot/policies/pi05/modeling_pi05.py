@@ -1429,44 +1429,27 @@ class PI05Policy(PreTrainedPolicy):
     
     def enable_uncertainty_prediction(
         self,
-        task_name: str,
-        rnd_models_dir: Optional[Path] = None,
+        rnd_models: dict,
     ):
         """
-        Enable uncertainty prediction by loading appropriate RND models.
+        Enable uncertainty prediction by injecting pre-loaded RND models.
+        
+        This method should be called after RND models have been loaded externally
+        (typically via load_rnd_models_for_policy() from the inference module).
         
         Args:
-            task_name: Environment task name (e.g., 'libero_object_0')
-            rnd_models_dir: Directory containing trained RND models
-                           (default: lerobot/uncertainty_quantification/rnd_save_models/)
+            rnd_models: Dict mapping camera names to loaded RND models
+                       (e.g., {'agentview': RND_OE, 'wrist': RND_OE})
         
         Raises:
-            ImportError: If uncertainty_quantification module is not available
-            FileNotFoundError: If RND checkpoints are not found
+            ValueError: If rnd_models is empty or invalid
         """
-        try:
-            from uncertainty_quantification.inference import (
-                extract_task_type_from_env_name,
-                load_rnd_models_for_task,
+        if not rnd_models or not isinstance(rnd_models, dict):
+            raise ValueError(
+                f"Invalid rnd_models argument. Expected non-empty dict, got: {type(rnd_models)}"
             )
-        except ImportError as e:
-            raise ImportError(
-                "Could not import uncertainty_quantification module. "
-                "Make sure Phase 1 and 2 are completed."
-            ) from e
         
-        # Extract task type from environment name
-        task_type = extract_task_type_from_env_name(task_name)
-        logging.info(f"Enabling uncertainty prediction for task type: {task_type}")
-        
-        # Load RND models for both cameras
-        self.rnd_models = load_rnd_models_for_task(
-            task_type=task_type,
-            cameras=['agentview', 'wrist'],
-            rnd_models_dir=rnd_models_dir,
-            device=self.config.device,
-        )
-        
+        self.rnd_models = rnd_models
         self.uncertainty_enabled = True
         self.latest_image_embeddings = None
         
