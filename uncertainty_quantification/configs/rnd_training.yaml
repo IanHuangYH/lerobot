@@ -1,0 +1,37 @@
+# RND Training Configuration
+#
+# Default hyperparameters for training RND models.
+# These can be overridden via command-line arguments in train_rnd.py
+
+# Model Architecture
+model:
+  obs_embedding_dim: 2048  # SigLIP token dimension
+  output_size: 512         # RND feature space dimension
+  rnd_loss: "mse"          # Loss function: "mse" or "l2"
+
+# Training Hyperparameters
+training:
+  epochs: 100              # Maximum training epochs
+  batch_size: 256          # Batch size (reduce if OOM)
+  learning_rate: 1.0e-4    # Initial learning rate
+  lr_min: 1.0e-6           # Minimum LR for cosine scheduler
+  patience: 10             # Early stopping patience
+  train_val_split: 0.9     # Train/validation split ratio
+
+# System
+system:
+  device: "cuda"           # Training device: "cuda" or "cpu"
+  seed: 42                 # Random seed for reproducibility
+  num_workers: 0           # DataLoader workers (keep 0 for chunk caching)
+
+# Dataset
+dataset:
+  dataset_dir: "uncertainty_quantification/rnd_dataset"
+  output_dir: "uncertainty_quantification/rnd_save_models"
+
+# Notes:
+# - ChunkedRNDDataset loads chunks on-demand to avoid OOM
+# - With batch_size=256, each batch is ~2 MB in RAM
+# - Total memory during training: ~1.2 GB (chunk + batch + model + gradients)
+# - Reduce batch_size to 128 if training on systems with <8 GB RAM
+# - TensorBoard logs are saved to {output_dir}/{task_type}_{camera}/tensorboard/
