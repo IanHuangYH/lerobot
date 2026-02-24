@@ -146,6 +146,7 @@ def rollout(
     return_observations: bool = False,
     render_callback: Callable[[gym.vector.VectorEnv], None] | None = None,
     attention_dir: Path | None = None,
+    uncertainty_dir: Path | None = None,
     batch_index: int = 0,
     n_episodes_so_far: int = 0,
 ) -> dict:
@@ -187,6 +188,14 @@ def rollout(
     if attention_dir is not None and supports_attention:
         policy.model.enable_attention_map_saving()
         logging.info("Attention map saving enabled for this rollout.")
+    
+    # Enable uncertainty prediction if requested and policy supports it
+    supports_uncertainty = hasattr(policy, "rnd_models") and policy.rnd_models is not None
+    if uncertainty_dir is not None and not supports_uncertainty:
+        logging.warning(
+            f"Uncertainty prediction requested but policy has no RND models loaded. "
+            "Uncertainty scores will not be computed."
+        )
         
         # Check if torch.compile might interfere
         # Note: @torch.no_grad() also adds __wrapped__, so we check the type instead
@@ -227,6 +236,9 @@ def rollout(
     
     # Store attention maps per rollout step (if enabled)
     all_attention_maps = [] if (attention_dir is not None and supports_attention) else None
+    
+    # Store uncertainty scores per rollout step (if enabled)
+    all_uncertainty_scores = [] if (uncertainty_dir is not None and supports_uncertainty) else None
 
     step = 0
     # Keep track of which environments are done.
@@ -273,6 +285,16 @@ def rollout(
                 logging.debug(f"Collected attention maps at rollout step {step} ({len(step_attention)} denoising steps)")
                 # Clear for next prediction
                 policy.model.clear_attention_maps()
+        
+        # Collect uncertainty scores after action selection (if enabled)
+        if uncertainty_dir is not None and supports_uncertainty:
+            uncertainty_scores = policy.get_uncertainty_scores()
+            if uncertainty_scores:  # Check if scores were computed
+                all_uncertainty_scores.append({
+                    'step': step,
+                    'uncertainty': deepcopy(uncertainty_scores),
+                })
+                logging.debug(f"Collected uncertainty scores at rollout step {step}")
 
         action_transition = {ACTION: action}
         action_transition = env_postprocessor(action_transition)
@@ -353,6 +375,31 @@ def rollout(
             logging.info(f"Saved attention maps for {env.num_envs} episodes ({len(all_attention_maps)} prediction steps each) to {attention_dir}")
         else:
             logging.warning(f"Attention saving was enabled but no attention maps were collected. This may happen if torch.compile() is enabled.")
+    
+    # Save uncertainty scores if enabled and supported
+    if uncertainty_dir is not None and supports_uncertainty:
+        if all_uncertainty_scores:
+            # Save one file per episode in the batch
+            uncertainty_dir.mkdir(parents=True, exist_ok=True)
+            for batch_idx in range(env.num_envs):
+                episode_idx = n_episodes_so_far + batch_idx
+                uncertainty_path = uncertainty_dir / f"episode_{episode_idx:05d}_uncertainty.pt"
+                
+                # Save all rollout steps' uncertainty scores for this episode
+                torch.save(
+                    {
+                        "episode_index": episode_idx,
+                        "batch_index": batch_idx,
+                        "rollout_steps": all_uncertainty_scores,
+                        "metadata": {
+                            "num_steps": len(all_uncertainty_scores),
+                        },
+                    },
+                    uncertainty_path,
+                )
+            logging.info(f"Saved uncertainty scores for {env.num_envs} episodes to {uncertainty_dir}")
+        else:
+            logging.warning(f"Uncertainty prediction was enabled but no scores were collected.")
 
     # Stack the sequence along the first dimension so that we have (batch, sequence, *) tensors.
     ret = {
@@ -384,6 +431,7 @@ def eval_policy(
     max_episodes_rendered: int = 0,
     videos_dir: Path | None = None,
     attention_dir: Path | None = None,
+    uncertainty_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
 ) -> dict:
@@ -395,6 +443,7 @@ def eval_policy(
         max_episodes_rendered: Maximum number of episodes to render into videos.
         videos_dir: Where to save rendered videos.
         attention_dir: Where to save attention maps (if policy supports it).
+        uncertainty_dir: Where to save uncertainty scores (if policy supports it).
         return_episode_data: Whether to return episode data for online training. Incorporates the data into
             the "episodes" key of the returned dictionary.
         start_seed: The first seed to use for the first individual rollout. For all subsequent rollouts the
@@ -475,6 +524,7 @@ def eval_policy(
             return_observations=return_episode_data,
             render_callback=render_frame if max_episodes_rendered > 0 else None,
             attention_dir=attention_dir,
+            uncertainty_dir=uncertainty_dir,
             batch_index=batch_ix,
             n_episodes_so_far=batch_ix * env.num_envs,
         )
@@ -680,6 +730,17 @@ def eval_main(cfg: EvalPipelineConfig):
     # Create environment-specific preprocessor and postprocessor (e.g., for LIBERO environments)
     env_preprocessor, env_postprocessor = make_env_pre_post_processors(env_cfg=cfg.env, policy_cfg=cfg.policy)
 
+    # Load RND models for uncertainty quantification if enabled
+    if cfg.eval.save_uncertainty_maps:
+        logging.info("Loading RND models for uncertainty quantification...")
+        try:
+            from uncertainty_quantification.inference.rnd_inference import load_rnd_models_for_policy
+            load_rnd_models_for_policy(policy, cfg.env.task, device=str(policy.config.device))
+            logging.info("✓ RND models loaded successfully for uncertainty prediction")
+        except Exception as e:
+            logging.error(f"Failed to load RND models: {e}")
+            logging.warning("Continuing without uncertainty prediction")
+
     with torch.no_grad(), torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext():
         info = eval_policy_all(
             envs=envs,
@@ -692,6 +753,7 @@ def eval_main(cfg: EvalPipelineConfig):
             max_episodes_rendered=10,
             videos_dir=Path(cfg.output_dir) / "videos",
             attention_dir=Path(cfg.output_dir) / "attention" if cfg.eval.save_attention_maps else None,
+            uncertainty_dir=Path(cfg.output_dir) / "uncertainty" if cfg.eval.save_uncertainty_maps else None,
             start_seed=cfg.seed,
             max_parallel_tasks=cfg.env.max_parallel_tasks,
         )
@@ -735,6 +797,7 @@ def eval_one(
     max_episodes_rendered: int,
     videos_dir: Path | None,
     attention_dir: Path | None,
+    uncertainty_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
 ) -> TaskMetrics:
@@ -742,6 +805,7 @@ def eval_one(
 
     task_videos_dir = videos_dir
     task_attention_dir = attention_dir
+    task_uncertainty_dir = uncertainty_dir
 
     task_result = eval_policy(
         env=env,
@@ -754,6 +818,7 @@ def eval_one(
         max_episodes_rendered=max_episodes_rendered,
         videos_dir=task_videos_dir,
         attention_dir=task_attention_dir,
+        uncertainty_dir=task_uncertainty_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
     )
@@ -781,6 +846,7 @@ def run_one(
     max_episodes_rendered: int,
     videos_dir: Path | None,
     attention_dir: Path | None,
+    uncertainty_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
 ):
@@ -798,6 +864,11 @@ def run_one(
     if attention_dir is not None:
         task_attention_dir = attention_dir / f"{task_group}_{task_id}"
         task_attention_dir.mkdir(parents=True, exist_ok=True)
+    
+    task_uncertainty_dir = None
+    if uncertainty_dir is not None:
+        task_uncertainty_dir = uncertainty_dir / f"{task_group}_{task_id}"
+        task_uncertainty_dir.mkdir(parents=True, exist_ok=True)
 
     # Call the existing eval_one (assumed to return TaskMetrics-like dict)
     metrics = eval_one(
@@ -811,6 +882,7 @@ def run_one(
         max_episodes_rendered=max_episodes_rendered,
         videos_dir=task_videos_dir,
         attention_dir=task_attention_dir,
+        uncertainty_dir=task_uncertainty_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
     )
@@ -832,6 +904,7 @@ def eval_policy_all(
     max_episodes_rendered: int = 0,
     videos_dir: Path | None = None,
     attention_dir: Path | None = None,
+    uncertainty_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
     max_parallel_tasks: int = 1,
@@ -889,6 +962,7 @@ def eval_policy_all(
         max_episodes_rendered=max_episodes_rendered,
         videos_dir=videos_dir,
         attention_dir=attention_dir,
+        uncertainty_dir=uncertainty_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
     )

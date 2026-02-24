@@ -749,13 +749,23 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         att_masks = []
 
         # Process images
-        for img, img_mask in zip(images, img_masks, strict=True):
+        # Store image embeddings for uncertainty quantification if enabled
+        if hasattr(self, 'uncertainty_enabled') and self.uncertainty_enabled:
+            self.latest_image_embeddings = {}
+        
+        for img_idx, (img, img_mask) in enumerate(zip(images, img_masks, strict=True)):
 
             def image_embed_func(img):
                 return self.paligemma_with_expert.embed_image(img)
 
             img_emb = self._apply_checkpoint(image_embed_func, img)
             bsize, num_img_embs = img_emb.shape[:2]
+            
+            # Store raw embeddings for uncertainty computation
+            if hasattr(self, 'uncertainty_enabled') and self.uncertainty_enabled:
+                # Determine camera name based on index (LIBERO: 0=agentview, 1=wrist)
+                camera_name = 'agentview' if img_idx == 0 else 'wrist'
+                self.latest_image_embeddings[camera_name] = img_emb.detach()
 
             embs.append(img_emb)
             pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
@@ -1049,6 +1059,11 @@ class PI05Policy(PreTrainedPolicy):
             self.model.gradient_checkpointing_enable()
 
         self.model.to(config.device)
+
+        # Uncertainty quantification attributes
+        self.rnd_models = None
+        self.latest_image_embeddings = None
+        self.uncertainty_enabled = False
 
         self.reset()
 
@@ -1411,3 +1426,95 @@ class PI05Policy(PreTrainedPolicy):
             "target_modules": target_modules,
             "modules_to_save": [],
         }
+    
+    def enable_uncertainty_prediction(
+        self,
+        task_name: str,
+        rnd_models_dir: Optional[Path] = None,
+    ):
+        """
+        Enable uncertainty prediction by loading appropriate RND models.
+        
+        Args:
+            task_name: Environment task name (e.g., 'libero_object_0')
+            rnd_models_dir: Directory containing trained RND models
+                           (default: lerobot/uncertainty_quantification/rnd_save_models/)
+        
+        Raises:
+            ImportError: If uncertainty_quantification module is not available
+            FileNotFoundError: If RND checkpoints are not found
+        """
+        try:
+            from uncertainty_quantification.inference import (
+                extract_task_type_from_env_name,
+                load_rnd_models_for_task,
+            )
+        except ImportError as e:
+            raise ImportError(
+                "Could not import uncertainty_quantification module. "
+                "Make sure Phase 1 and 2 are completed."
+            ) from e
+        
+        # Extract task type from environment name
+        task_type = extract_task_type_from_env_name(task_name)
+        logging.info(f"Enabling uncertainty prediction for task type: {task_type}")
+        
+        # Load RND models for both cameras
+        self.rnd_models = load_rnd_models_for_task(
+            task_type=task_type,
+            cameras=['agentview', 'wrist'],
+            rnd_models_dir=rnd_models_dir,
+            device=self.config.device,
+        )
+        
+        self.uncertainty_enabled = True
+        self.latest_image_embeddings = None
+        
+        logging.info(
+            f"Uncertainty prediction enabled with {len(self.rnd_models)} RND models"
+        )
+    
+    def get_uncertainty_scores(self, return_spatial_maps: bool = True) -> Optional[dict]:
+        """
+        Compute uncertainty scores from latest image embeddings.
+        
+        This method should be called after select_action() to get uncertainty
+        for the current observation.
+        
+        Args:
+            return_spatial_maps: Whether to include spatial uncertainty maps (16x16)
+        
+        Returns:
+            uncertainty_dict: Dictionary containing:
+                - 'overall': float - Combined uncertainty across cameras
+                - 'agentview': float - Agentview camera uncertainty
+                - 'wrist': float - Wrist camera uncertainty
+                - 'spatial_maps': Dict[str, Tensor] - Spatial maps (16x16) if requested
+                - 'token_uncertainties': Dict[str, Tensor] - Per-token uncertainties
+            
+            Returns None if uncertainty is not enabled or no embeddings available
+        """
+        if not self.uncertainty_enabled or self.rnd_models is None:
+            logging.warning(
+                "Uncertainty prediction not enabled. Call enable_uncertainty_prediction() first."
+            )
+            return None
+        
+        if self.latest_image_embeddings is None:
+            logging.warning("No image embeddings available. Run forward pass first.")
+            return None
+        
+        try:
+            from uncertainty_quantification.inference import compute_uncertainty_scores
+        except ImportError as e:
+            logging.error(f"Could not import uncertainty computation: {e}")
+            return None
+        
+        # Compute uncertainty scores
+        uncertainties = compute_uncertainty_scores(
+            image_embeddings=self.latest_image_embeddings,
+            rnd_models=self.rnd_models,
+            return_spatial_maps=return_spatial_maps,
+        )
+        
+        return uncertainties
