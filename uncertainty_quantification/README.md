@@ -5,7 +5,6 @@ This module implements uncertainty prediction for the Pi0.5 Vision-Language-Acti
 ---
 
 ## 📋 Overview
-
 **Goal**: Predict failure at runtime for Pi0.5 policy on LIBERO tasks by detecting out-of-distribution (OOD) visual observations.
 
 **Method**: Random Network Distillation (RND) on SigLIP vision encoder embeddings
@@ -560,36 +559,137 @@ python -m uncertainty_quantification.scripts.collect_rnd_training_data \
 
 ---
 
-### **Phase 2: RND Model Training**
+### **Phase 2: RND Model Training** ✅
 
 **Goal**: Train 8 RND models (4 task types × 2 cameras)
 
 **Steps**:
-1. Port RND model code from `fiper_template` to `lerobot/uncertainty_quantification/`
-   - Adapt `rnd_models.py` (RND_OE class)
-   - Adapt `rnd_trainer.py`
-2. Create training script with PyTorch DataLoader
-3. Train each RND model:
+1. ✅ Port RND model code from `fiper_template` to `lerobot/uncertainty_quantification/`
+   - ✅ Adapt `rnd_models.py` (RND_OE class with checkpoint saving)
+   - ✅ Adapt `rnd_trainer.py` (memory-efficient training with ChunkedRNDDataset)
+2. ✅ Create training script with PyTorch DataLoader
+3. ✅ Train each RND model:
    - Input: `(2048,)` token embeddings
    - Output: `(512,)` features
    - Loss: MSE between predictor and frozen target
-4. Save trained models as `.ckpt` files
+4. ✅ Save trained models as `.ckpt` files with full metadata
 
 **Hyperparameters** (from FIPER):
-- Learning rate: 1e-4
+- Learning rate: 1e-4 (with cosine annealing to 1e-6)
 - Batch size: 256
-- Epochs: 50-100 (with early stopping)
+- Epochs: up to 100 (with early stopping patience=10)
 - Optimizer: Adam
 - Loss: MSE
+- Train/Val split: 90/10
 
-**Output**:
-- `uncertainty_quantification/rnd_save_models/{task_type}_{camera}_rnd.ckpt`
-- 8 model files (each ~50-100 MB)
+**Output Structure**:
+```
+uncertainty_quantification/rnd_save_models/
+├── spatial_agentview/
+│   ├── model.ckpt                    # Final checkpoint (easy loading)
+│   ├── best_model.ckpt               # Best validation loss
+│   ├── model_epoch_XX_loss_XXX_seed_42_YYYY-MM-DD_HH-MM.ckpt  # Timestamped
+│   ├── metadata.json                 # Model config + hyperparameters
+│   ├── training_progress.png         # Loss curves plot
+│   └── tensorboard/                  # TensorBoard logs
+│       └── events.out.tfevents.*
+├── spatial_wrist/
+│   ├── model.ckpt
+│   └── ...
+├── object_agentview/
+├── object_wrist/
+├── goal_agentview/
+├── goal_wrist/
+├── long_agentview/
+└── long_wrist/
 
-**Files to Create**:
-- `lerobot/uncertainty_quantification/rnd_models/` - RND model code
-- `lerobot/uncertainty_quantification/scripts/train_rnd.py` - Training script
-- `lerobot/uncertainty_quantification/configs/rnd_training.yaml` - Training config
+# Total: 8 model directories (each ~100-200 MB with all files)
+```
+
+**Checkpoint Format** (full metadata for reproducibility):
+```python
+{
+    'state_dict': model.state_dict(),           # Trained weights
+    'model_config': {                           # Model architecture
+        'obs_embedding_dim': 2048,
+        'output_size': 512,
+        'rnd_loss': 'mse',
+        'seed': 42
+    },
+    'epoch': 45,                                # Training progress
+    'best_val_loss': 0.0234,
+    'train_losses': [0.15, 0.10, ...],         # Full training history
+    'val_losses': [0.16, 0.11, ...],
+    'hyperparameters': {                        # Full training config
+        'epochs': 100,
+        'batch_size': 256,
+        'lr': 1e-4,
+        'lr_min': 1e-6,
+        'patience': 10,
+        'train_val_split': 0.9,
+        'seed': 42,
+        'device': 'cuda',
+        'dataset_dir': 'rnd_dataset/spatial',
+        'camera': 'agentview'
+    }
+}
+```
+
+**Memory Management** (Critical for Large Datasets):
+- ✅ Uses `ChunkedRNDDataset` for on-demand chunk loading
+- ✅ Only 1 chunk (~1 GB) in memory at a time
+- ✅ Batch size 256 = ~2 MB per batch in GPU
+- ✅ Total memory during training: ~1.2 GB
+- ✅ No risk of OOM even with 4.38M training tokens per camera
+
+**Training Features**:
+- ✅ Early stopping with validation split
+- ✅ TensorBoard logging (train/val loss, learning rate)
+- ✅ Cosine learning rate scheduling
+- ✅ Automatic checkpoint saving (best + final + timestamped)
+- ✅ Training progress plots (PNG)
+- ✅ Full hyperparameter logging for reproducibility
+- ✅ Deterministic training with seed control
+
+**Usage**:
+
+```bash
+# Train single model
+python -m uncertainty_quantification.scripts.train_rnd \
+  --task-type spatial \
+  --camera agentview \
+  --epochs 100 \
+  --batch-size 256 \
+  --lr 1e-4 \
+  --device cuda
+
+# Quick test with fewer epochs
+python -m uncertainty_quantification.scripts.train_rnd \
+  --task-type spatial \
+  --camera agentview \
+  --epochs 10 \
+  --batch-size 128
+
+# Train all 8 models (spatial, object, goal, long × agentview, wrist)
+./uncertainty_quantification/scripts/train_all_rnd.sh
+
+# Train with custom settings
+EPOCHS=50 BATCH_SIZE=128 ./uncertainty_quantification/scripts/train_all_rnd.sh
+
+# Monitor training in TensorBoard
+tensorboard --logdir uncertainty_quantification/rnd_save_models/
+
+# Monitor specific model
+tensorboard --logdir uncertainty_quantification/rnd_save_models/spatial_agentview/tensorboard/
+```
+
+**Files Created**: ✅
+- `uncertainty_quantification/rnd_models/rnd_models.py` - RND_OE model with checkpoint I/O
+- `uncertainty_quantification/rnd_models/rnd_trainer.py` - Training loop with TensorBoard
+- `uncertainty_quantification/rnd_models/__init__.py` - Package exports
+- `uncertainty_quantification/scripts/train_rnd.py` - CLI training script
+- `uncertainty_quantification/scripts/train_all_rnd.sh` - Batch training for all models
+- `uncertainty_quantification/configs/rnd_training.yaml` - Default hyperparameters
 
 ---
 
