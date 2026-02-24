@@ -53,6 +53,7 @@ class RNDTrainer:
         output_dir: Path,
         device: str = "cuda",
         seed: Optional[int] = None,
+        max_cached_chunks: int = 4,
     ):
         """
         Initialize RND trainer.
@@ -63,12 +64,14 @@ class RNDTrainer:
             output_dir: Directory to save checkpoints and logs
             device: Device for training ("cuda" or "cpu")
             seed: Random seed for reproducibility
+            max_cached_chunks: Max chunks to keep in memory (4=~8GB, 2=~4GB)
         """
         self.dataset_dir = Path(dataset_dir)
         self.camera = camera
         self.output_dir = Path(output_dir)
         self.device = device if torch.cuda.is_available() else "cpu"
         self.seed = seed
+        self.max_cached_chunks = max_cached_chunks
         
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -148,8 +151,14 @@ class RNDTrainer:
         
         # Load dataset (memory-efficient chunked loading)
         print("Loading dataset...")
-        dataset = ChunkedRNDDataset(self.dataset_dir, self.camera)
+        dataset = ChunkedRNDDataset(
+            self.dataset_dir, 
+            self.camera,
+            max_cached_chunks=self.max_cached_chunks
+        )
         print(f"Dataset loaded: {len(dataset):,} tokens total")
+        print(f"Cache config: {dataset.max_cached_chunks} chunks (~{dataset.max_cached_chunks * 2:.0f} GB)")
+
         
         # Split into train and validation
         train_size = int(train_val_split * len(dataset))
@@ -300,6 +309,16 @@ class RNDTrainer:
         print(f"\nTraining completed!")
         print(f"Best validation loss: {best_val_loss:.6f}")
         print(f"Total epochs: {epoch+1}")
+        
+        # Print cache statistics
+        cache_stats = dataset.get_cache_stats()
+        print(f"\nDataset cache statistics:")
+        print(f"  Cache hits: {cache_stats['cache_hits']:,}")
+        print(f"  Cache misses: {cache_stats['cache_misses']:,}")
+        print(f"  Hit rate: {cache_stats['hit_rate']*100:.1f}%")
+        print(f"  Final cached chunks: {cache_stats['cached_chunks']}/{cache_stats['max_cached_chunks']}")
+        print(f"  Estimated memory: {cache_stats['estimated_memory_gb']:.1f} GB")
+
         
         # Load best model state
         if best_state_dict is not None:

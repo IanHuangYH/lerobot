@@ -143,6 +143,12 @@ def parse_args():
         default=42,
         help="Random seed for reproducibility"
     )
+    parser.add_argument(
+        "--max-cached-chunks",
+        type=int,
+        default=4,
+        help="Max chunks to cache in memory (4 chunks ~8GB, 2 chunks ~4GB)"
+    )
     
     return parser.parse_args()
 
@@ -178,6 +184,7 @@ def main():
         output_dir=output_path,
         device=args.device,
         seed=args.seed,
+        max_cached_chunks=args.max_cached_chunks,
     )
     
     # Train model

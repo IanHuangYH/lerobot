@@ -9,7 +9,8 @@ The RND dataset is saved as multiple chunk files to avoid memory issues:
 
 import json
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Dict
+from collections import OrderedDict
 
 import torch
 
@@ -80,26 +81,38 @@ class ChunkedRNDDataset(torch.utils.data.Dataset):
     """
     PyTorch Dataset for RND training with on-demand chunk loading.
     
-    Loads chunks only when needed to minimize memory usage. Suitable for
-    large datasets that don't fit in RAM.
+    Uses LRU cache to keep multiple chunks in memory, balancing speed and memory.
+    
+    Memory-Speed Trade-off:
+    - max_cached_chunks=1: ~2 GB RAM, slower (frequent disk reads)
+    - max_cached_chunks=4: ~8 GB RAM, faster (fewer disk reads)
+    - max_cached_chunks=8: ~16 GB RAM, fastest (rare disk reads)
     
     Example usage:
-        dataset = ChunkedRNDDataset("rnd_dataset/spatial", "agentview")
-        dataloader = DataLoader(dataset, batch_size=256, shuffle=True)
+        dataset = ChunkedRNDDataset(
+            "rnd_dataset/object", 
+            "agentview",
+            max_cached_chunks=4  # Keep 4 chunks (~8 GB) in memory
+        )
+        dataloader = DataLoader(dataset, batch_size=256, shuffle=True, num_workers=0)
         
         for batch in dataloader:
             # batch shape: (256, 2048)
             train_rnd(batch)
     """
     
-    def __init__(self, dataset_dir: Path, camera: str):
+    def __init__(self, dataset_dir: Path, camera: str, max_cached_chunks: int = 4):
         """
         Args:
             dataset_dir: Path to task dataset directory
             camera: Camera name ('agentview' or 'wrist')
+            max_cached_chunks: Maximum number of chunks to keep in memory (default: 4)
+                              Higher = faster training but more RAM
+                              Recommended: 4 for 16GB RAM, 2 for 8GB RAM
         """
         self.dataset_dir = Path(dataset_dir)
         self.camera = camera
+        self.max_cached_chunks = max_cached_chunks
         
         # Load metadata
         stats_file = self.dataset_dir / "collection_stats.json"
@@ -118,9 +131,13 @@ class ChunkedRNDDataset(torch.utils.data.Dataset):
         first_chunk = torch.load(self.dataset_dir / f"{camera}_tokens_00000.pt")
         self.chunk_size = first_chunk.shape[0]
         
-        # Cache for current loaded chunk
-        self._current_chunk_idx = 0
-        self._current_chunk = first_chunk
+        # LRU cache for multiple chunks (OrderedDict maintains insertion order)
+        self._chunk_cache: OrderedDict[int, torch.Tensor] = OrderedDict()
+        self._chunk_cache[0] = first_chunk  # Cache first chunk
+        
+        # Statistics for monitoring cache performance
+        self._cache_hits = 0
+        self._cache_misses = 0
     
     def __len__(self) -> int:
         """Return total number of tokens across all chunks."""
@@ -128,7 +145,7 @@ class ChunkedRNDDataset(torch.utils.data.Dataset):
     
     def __getitem__(self, idx: int) -> torch.Tensor:
         """
-        Get token at given index (lazy-loads chunks as needed).
+        Get token at given index (lazy-loads chunks as needed with LRU caching).
         
         Args:
             idx: Token index (0 to len-1)
@@ -143,10 +160,44 @@ class ChunkedRNDDataset(torch.utils.data.Dataset):
         chunk_idx = idx // self.chunk_size
         local_idx = idx % self.chunk_size
         
-        # Load chunk if not currently cached
-        if self._current_chunk_idx != chunk_idx:
+        # Check if chunk is in cache
+        if chunk_idx in self._chunk_cache:
+            # Cache hit! Move to end (most recently used)
+            self._chunk_cache.move_to_end(chunk_idx)
+            self._cache_hits += 1
+            chunk = self._chunk_cache[chunk_idx]
+        else:
+            # Cache miss - need to load from disk
+            self._cache_misses += 1
             chunk_file = self.dataset_dir / f"{self.camera}_tokens_{chunk_idx:05d}.pt"
-            self._current_chunk = torch.load(chunk_file)
-            self._current_chunk_idx = chunk_idx
+            chunk = torch.load(chunk_file)
+            
+            # Add to cache
+            self._chunk_cache[chunk_idx] = chunk
+            
+            # Evict oldest chunk if cache is full
+            if len(self._chunk_cache) > self.max_cached_chunks:
+                # Remove least recently used (first item)
+                evicted_idx = next(iter(self._chunk_cache))
+                del self._chunk_cache[evicted_idx]
         
-        return self._current_chunk[local_idx]
+        return chunk[local_idx]
+    
+    def get_cache_stats(self) -> Dict[str, float]:
+        """
+        Get cache performance statistics.
+        
+        Returns:
+            Dict with cache hit rate and memory usage info
+        """
+        total_accesses = self._cache_hits + self._cache_misses
+        hit_rate = self._cache_hits / total_accesses if total_accesses > 0 else 0.0
+        
+        return {
+            'cache_hits': self._cache_hits,
+            'cache_misses': self._cache_misses,
+            'hit_rate': hit_rate,
+            'cached_chunks': len(self._chunk_cache),
+            'max_cached_chunks': self.max_cached_chunks,
+            'estimated_memory_gb': len(self._chunk_cache) * self.chunk_size * 2048 * 4 / (1024**3)
+        }
