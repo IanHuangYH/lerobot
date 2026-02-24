@@ -13,7 +13,7 @@ echo "================================================"
 TASK_SUITE="libero_object"  # Test with object task type (matches trained RND)
 TASK_IDS='[0]'              # Test on first scene
 N_EPISODES=2                # Just 2 episodes for quick test
-OUTPUT_DIR="./uncertainty_quantification/test/test_uncertainty_inference"
+OUTPUT_DIR="uncertainty_quantification/eval_log/test_rnd_inference"
 
 echo ""
 echo "Configuration:"

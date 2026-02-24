@@ -19,7 +19,7 @@ import logging
 import math
 from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, Optional, TypedDict
 
 import torch
 import torch.nn.functional as F  # noqa: N812

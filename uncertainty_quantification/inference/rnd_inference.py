@@ -118,14 +118,19 @@ def load_rnd_models_for_task(
     camera_models = {}
     
     for camera in cameras:
-        # Checkpoint path: {task_type}_{camera}/model.ckpt
+        # Checkpoint path: {task_type}_{camera}/best_model.ckpt (or model.ckpt as fallback)
         model_dir = rnd_models_dir / f"{task_type}_{camera}"
-        checkpoint_path = model_dir / "model.ckpt"
+        checkpoint_path = model_dir / "best_model.ckpt"
+        
+        # Fallback to model.ckpt if best_model.ckpt doesn't exist
+        if not checkpoint_path.exists():
+            checkpoint_path = model_dir / "model.ckpt"
         
         if not checkpoint_path.exists():
             raise FileNotFoundError(
-                f"RND checkpoint not found: {checkpoint_path}. "
-                f"Expected format: {rnd_models_dir}/{task_type}_{camera}/model.ckpt"
+                f"RND checkpoint not found in {model_dir}. "
+                f"Expected 'best_model.ckpt' or 'model.ckpt'. "
+                f"Make sure Phase 2 training completed successfully for {task_type}_{camera}."
             )
         
         logging.info(f"Loading RND model for {task_type}/{camera} from {checkpoint_path}")

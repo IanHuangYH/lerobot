@@ -735,11 +735,21 @@ def eval_main(cfg: EvalPipelineConfig):
         logging.info("Loading RND models for uncertainty quantification...")
         try:
             from uncertainty_quantification.inference.rnd_inference import load_rnd_models_for_policy
-            load_rnd_models_for_policy(policy, cfg.env.task, device=str(policy.config.device))
+            load_rnd_models_for_policy(
+                policy, 
+                cfg.env.task, 
+                cameras=['agentview', 'wrist'],
+                rnd_models_dir=None,  # Use default: uncertainty_quantification/rnd_save_models/
+                device=str(policy.config.device)
+            )
             logging.info("✓ RND models loaded successfully for uncertainty prediction")
         except Exception as e:
             logging.error(f"Failed to load RND models: {e}")
-            logging.warning("Continuing without uncertainty prediction")
+            raise RuntimeError(
+                f"RND model loading failed. Cannot proceed with uncertainty prediction.\n"
+                f"Make sure Phase 2 (RND training) has been completed for the task type.\n"
+                f"Original error: {e}"
+            ) from e
 
     with torch.no_grad(), torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext():
         info = eval_policy_all(
