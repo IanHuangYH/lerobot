@@ -791,37 +791,81 @@ def get_uncertainty_scores(self):
 
 ---
 
-### **Phase 4: Visualization**
+### **Phase 4: Visualization** ✅
 
 **Goal**: Visualize uncertainty heatmaps overlaid on rollout videos
 
-**Steps**:
-1. Create verification script (similar to `verify_attention_video_alignment.py`)
-2. For each timestep:
-   - Load uncertainty spatial map `(16, 16)`
-   - Upsample to image resolution `(224, 224)`
-   - Overlay on video frame with colormap (red = high uncertainty)
-3. Create side-by-side visualizations:
-   - Left: agentview + uncertainty overlay
-   - Right: wrist + uncertainty overlay
-4. Generate timeline plots showing uncertainty over episode
+**Implementation**: Complete - see `PHASE4_SUMMARY.md` for details
 
-**Visualization Types**:
-1. **Heatmap overlay**: Uncertainty as transparent red overlay on video
-2. **Pure heatmap**: Uncertainty map only (no video background)
-3. **Timeline graph**: Uncertainty score vs. timestep
-4. **Comparison**: Success vs. failure episodes
+**Key Features**:
+1. **2x2 Grid Snapshots**: Overlays + pure heatmaps with uncertainty scores
+2. **Timeline Plots**: Overall, camera comparison, multi-episode
+3. **Batch Processing**: Automate visualization for many episodes
 
-**Output**:
-- `eval_logs/{eval_name}/uncertainty/{task}/verification/`
-  - `episode_XXXXX/timestep_XXX_agentview_overlay.png`
-  - `episode_XXXXX/timestep_XXX_wrist_overlay.png`
-  - `episode_XXXXX/uncertainty_timeline.png`
+**Usage**:
+```bash
+# Single episode verification (key timesteps)
+python -m uncertainty_quantification.visualization.verify_uncertainty_video_alignment \
+  --uncertainty_path eval_logs/with_uncertainty/uncertainty/libero_object_0/episode_00003_uncertainty.pt \
+  --video_path eval_logs/with_uncertainty/videos/libero_object_0/eval_episode_00003.mp4 \
+  --output_path eval_logs/with_uncertainty/uncertainty/libero_object_0/verification \
+  --timesteps 0 10 20 50 100 \
+  --colormap viridis \
+  --alpha 0.55 \
+  --episode_id 3
 
-**Files to Create**:
-- `lerobot/uncertainty_quantification/script/visualization.py`
-- `lerobot/uncertainty_quantification/script/verify_uncertainty_video_alignment.py`
-- `lerobot/uncertainty_quantification/script/run_verify_uncertainty_video_alignment.sh`
+# Batch verification (all episodes)
+./uncertainty_quantification/scripts/run_verify_uncertainty_video_alignment.sh
+
+# Timeline visualization (single episode)
+python -m uncertainty_quantification.visualization.visualize_uncertainty_timeline \
+  --uncertainty_paths eval_logs/with_uncertainty/uncertainty/libero_object_0/episode_00003_uncertainty.pt \
+  --output_dir eval_logs/with_uncertainty/uncertainty/libero_object_0/timelines \
+  --plot_type all
+
+# Timeline visualization (compare multiple episodes)
+python -m uncertainty_quantification.visualization.visualize_uncertainty_timeline \
+  --uncertainty_paths \
+      eval_logs/with_uncertainty/uncertainty/libero_object_0/episode_00000_uncertainty.pt \
+      eval_logs/with_uncertainty/uncertainty/libero_object_0/episode_00001_uncertainty.pt \
+  --output_dir eval_logs/with_uncertainty/uncertainty/libero_object_0/timelines \
+  --episode_names "Success-1" "Failed-1" \
+  --compare_episodes \
+  --plot_type all
+```
+
+**Output Structure**:
+```
+eval_logs/{eval_name}/uncertainty/{task}/
+├── verification/episode_XXXXX/              # 2x2 grid snapshots
+│   ├── timestep_000_grid.png               # Overlays + heatmaps
+│   ├── timestep_010_grid.png
+│   └── ...
+└── timelines/                               # Timeline plots
+    ├── episode_00000_uncertainty_timeline.png
+    ├── episode_00000_uncertainty_camera_comparison.png
+    ├── multi_episode_comparison.png
+    └── ...
+```
+
+**Visualization Format** (2x2 Grid):
+```
+┌─────────────────────────┬─────────────────────────┐
+│   Agentview + Overlay   │   Wrist + Overlay       │
+│   Score: 0.1450         │   Score: 0.0890         │
+├─────────────────────────┼─────────────────────────┤
+│   Agentview Heatmap     │   Wrist Heatmap         │
+│   (Pure)                │   (Pure)                │
+└─────────────────────────┴─────────────────────────┘
+       Overall: 0.1170 | Timestep: 50
+```
+
+**Files Created**: ✅
+- `uncertainty_quantification/visualization/__init__.py`
+- `uncertainty_quantification/visualization/verify_uncertainty_video_alignment.py`
+- `uncertainty_quantification/visualization/visualize_uncertainty_timeline.py`
+- `uncertainty_quantification/scripts/run_verify_uncertainty_video_alignment.sh`
+- `uncertainty_quantification/PHASE4_SUMMARY.md` - Complete implementation guide
 
 ---
 
@@ -854,8 +898,10 @@ To determine if alternative options (2 or 3) outperform the baseline (Option 1):
 lerobot/
 ├── uncertainty_quantification/
 │   ├── README.md                    # This file
+│   ├── PHASE1_SUMMARY.md            # Phase 1 implementation guide
 │   ├── PHASE2_SUMMARY.md            # Phase 2 implementation guide
 │   ├── PHASE3_SUMMARY.md            # Phase 3 implementation guide
+│   ├── PHASE4_SUMMARY.md            # Phase 4 implementation guide
 │   ├── __init__.py
 │   ├── configs/
 │   │   ├── rnd_data_collection.yaml
@@ -868,34 +914,34 @@ lerobot/
 │   ├── inference/                   # Phase 3: Inference utilities
 │   │   ├── __init__.py
 │   │   └── rnd_inference.py         # RND model loading & uncertainty computation
+│   ├── visualization/               # Phase 4: Visualization tools
+│   │   ├── __init__.py
+│   │   ├── verify_uncertainty_video_alignment.py  # 2x2 grid snapshots
+│   │   └── visualize_uncertainty_timeline.py      # Timeline plots
 │   ├── scripts/
 │   │   ├── collect_rnd_training_data.py # Phase 1 CLI
 │   │   ├── collect_all_tasks.sh         # Batch collection
 │   │   ├── train_rnd.py                 # Phase 2 CLI
 │   │   ├── train_all_rnd.sh             # Train all 8 models
-│   │   └── train_all_rnd_tmux.sh        # tmux monitoring
+│   │   ├── train_all_rnd_tmux.sh        # tmux monitoring
+│   │   └── run_verify_uncertainty_video_alignment.sh  # Phase 4 batch viz
 │   ├── test/
 │   │   ├── test_data_collection.sh      # Phase 1 test
 │   │   ├── test_rnd_training.sh         # Phase 2 test
 │   │   └── test_uncertainty_inference.sh # Phase 3 test
-│   ├── rnd_models/
-│   │   ├── __init__.py
-│   │   ├── rnd_models.py            # RND_OE model class
-│   │   └── rnd_trainer.py           # Training logic with chunked loading
-│   └── visualization.py             # Phase 4: Create heatmaps (TODO)
-├── data/
-│   ├── rnd_training/
-│   │   ├── spatial/
-│   │   ├── object/
-│   │   ├── goal/
-│   │   └── long/
 │   └── rnd_models/
-│       ├── spatial_agentview_rnd.ckpt
-│       ├── spatial_wrist_rnd.ckpt
-│       └── ...
-├── pi_setting/eval/
-│   ├── verify_uncertainty_video_alignment.py
-│   └── run_verify_uncertainty_video_alignment.sh
+│       ├── __init__.py
+│       ├── rnd_models.py            # RND_OE model class
+│       └── rnd_trainer.py           # Training logic with chunked loading
+├── uncertainty_quantification/rnd_dataset/
+│   ├── spatial/
+│   ├── object/
+│   ├── goal/
+│   └── long/
+├── uncertainty_quantification/rnd_save_models/
+│   ├── spatial_agentview/
+│   ├── spatial_wrist/
+│   └── ... (8 models total)
 └── src/lerobot/
     ├── policies/pi05/modeling_pi05.py  # Modified for RND
     ├── scripts/lerobot_eval.py         # Modified for uncertainty saving
@@ -962,11 +1008,28 @@ rnd:
    - ✅ Core logic (`data_collection.py`)
    - ✅ CLI script (`scripts/collect_rnd_training_data.py`)
    - ✅ Configuration file (`configs/rnd_data_collection.yaml`)
-4. ⏭️ **Phase 1 Execution**: Run data collection on all task types
-5. ⏭️ **Phase 2**: Train RND models
-6. ⏭️ **Phase 3**: Integrate into evaluation pipeline
-7. ⏭️ **Phase 4**: Create visualization tools
+   - ✅ Chunked dataset loader (`chunk_loader.py`)
+4. ✅ **Phase 1 Execution**: Run data collection on all task types
+5. ✅ **Phase 2**: Train RND models
+   - ✅ RND model class (`rnd_models/rnd_models.py`)
+   - ✅ Trainer with LRU cache (`rnd_models/rnd_trainer.py`)
+   - ✅ CLI training script (`scripts/train_rnd.py`)
+   - ✅ Batch training scripts (parallel + tmux)
+6. ✅ **Phase 3**: Integrate into evaluation pipeline
+   - ✅ Modify `modeling_pi05.py` for RND integration
+   - ✅ Modify `lerobot_eval.py` for uncertainty saving
+   - ✅ Add `save_uncertainty_maps` config flag
+   - ✅ Implement RND inference utilities
+7. ✅ **Phase 4**: Create visualization tools
+   - ✅ 2x2 grid snapshot visualization
+   - ✅ Timeline plotting (overall + camera comparison)
+   - ✅ Batch processing script
+8. ⏭️ **Phase 5** (Future): Statistical analysis and threshold optimization
+   - Correlation between uncertainty and task success
+   - ROC curves for failure prediction
+   - Optimal threshold determination
 
 ---
 
-**Last Updated**: February 23, 2026
+**Last Updated**: February 24, 2026  
+**Status**: Phases 1-4 Complete ✅ | Phase 5 Deferred ⏭️
