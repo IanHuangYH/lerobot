@@ -41,10 +41,12 @@ CUDA_VISIBLE_DEVICES=0 lerobot-eval \
     --policy.path=lerobot/pi05_libero_finetuned \
     --policy.n_action_steps=10 \
     --policy.device=cuda:0 \
+    --policy.compile_model=false \
     --output_dir=$OUTPUT_DIR \
     --env.max_parallel_tasks=1 \
     --env.task_ids=$TASK_IDS \
     --env.init_states=true \
+    --eval.save_attention_maps=true \
     --eval.save_uncertainty_maps=true
 
 # Verify outputs
@@ -54,7 +56,9 @@ echo "Verification"
 echo "================================================"
 
 UNCERTAINTY_DIR="$OUTPUT_DIR/uncertainty/${TASK_SUITE}_0"
+ATTENTION_DIR="$OUTPUT_DIR/attention/${TASK_SUITE}_0"
 
+# Check uncertainty files
 if [ -d "$UNCERTAINTY_DIR" ]; then
     echo "✓ Uncertainty directory created: $UNCERTAINTY_DIR"
     
@@ -71,7 +75,7 @@ if [ -d "$UNCERTAINTY_DIR" ]; then
     if [ $NUM_FILES -gt 0 ]; then
         FIRST_FILE=$(ls "$UNCERTAINTY_DIR"/*.pt | head -n 1)
         echo ""
-        echo "Sample file: $(basename $FIRST_FILE)"
+        echo "Sample uncertainty file: $(basename $FIRST_FILE)"
         python -c "
 import torch
 data = torch.load('$FIRST_FILE')
@@ -80,7 +84,6 @@ print('  Episode index:', data.get('episode_index'))
 print('  Num steps:', data['metadata']['num_steps'])
 if data['rollout_steps']:
     step0 = data['rollout_steps'][0]
-    print('  Step 0 keys:', list(step0.keys()))
     print('  Step 0 uncertainty keys:', list(step0['uncertainty'].keys()))
 "
     fi
@@ -90,10 +93,44 @@ else
 fi
 
 echo ""
+
+# Check attention files
+if [ -d "$ATTENTION_DIR" ]; then
+    echo "✓ Attention directory created: $ATTENTION_DIR"
+    
+    NUM_FILES=$(ls -1 "$ATTENTION_DIR"/*.pt 2>/dev/null | wc -l)
+    echo "✓ Found $NUM_FILES attention files"
+    
+    if [ $NUM_FILES -eq $N_EPISODES ]; then
+        echo "✓ Correct number of attention files ($N_EPISODES episodes)"
+    else
+        echo "⚠ Expected $N_EPISODES files, found $NUM_FILES"
+    fi
+    
+    # Check first file structure
+    if [ $NUM_FILES -gt 0 ]; then
+        FIRST_FILE=$(ls "$ATTENTION_DIR"/*.pt | head -n 1)
+        echo ""
+        echo "Sample attention file: $(basename $FIRST_FILE)"
+        python -c "
+import torch
+data = torch.load('$FIRST_FILE')
+print('  Keys:', list(data.keys()))
+print('  Episode index:', data.get('episode_index'))
+print('  Num rollout steps:', data['metadata']['num_rollout_steps'])
+print('  Num denoising steps per action:', data['metadata']['num_denoising_steps_per_action'])
+"
+    fi
+else
+    echo "⚠ Attention directory not found (might be disabled or compilation issue)"
+fi
+
+echo ""
 echo "================================================"
 echo "Test completed successfully!"
 echo "================================================"
 echo ""
 echo "Output location: $OUTPUT_DIR"
-echo "Uncertainty files: $UNCERTAINTY_DIR"
+echo "  Uncertainty files: $UNCERTAINTY_DIR"
+echo "  Attention files: $ATTENTION_DIR"
 echo ""
