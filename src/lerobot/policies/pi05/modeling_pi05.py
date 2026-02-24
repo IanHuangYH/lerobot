@@ -613,6 +613,11 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         # Initialize gradient checkpointing flag
         self.gradient_checkpointing_enabled = False
 
+        # Uncertainty quantification attributes (for RND-based uncertainty prediction)
+        self.rnd_models = None
+        self.latest_image_embeddings = None
+        self.uncertainty_enabled = False
+
         # Compile model if requested
         if config.compile_model:
             torch.set_float32_matmul_precision("high")
@@ -1449,9 +1454,15 @@ class PI05Policy(PreTrainedPolicy):
                 f"Invalid rnd_models argument. Expected non-empty dict, got: {type(rnd_models)}"
             )
         
+        # Set on both policy and model (model is where embed_prefix() runs)
         self.rnd_models = rnd_models
         self.uncertainty_enabled = True
         self.latest_image_embeddings = None
+        
+        # CRITICAL: Also set on the model instance (PI05Pytorch)
+        self.model.rnd_models = rnd_models
+        self.model.uncertainty_enabled = True
+        self.model.latest_image_embeddings = None
         
         logging.info(
             f"Uncertainty prediction enabled with {len(self.rnd_models)} RND models"
@@ -1483,7 +1494,8 @@ class PI05Policy(PreTrainedPolicy):
             )
             return None
         
-        if self.latest_image_embeddings is None:
+        # Read embeddings from the model (where embed_prefix() stores them)
+        if self.model.latest_image_embeddings is None:
             logging.warning("No image embeddings available. Run forward pass first.")
             return None
         
@@ -1493,9 +1505,9 @@ class PI05Policy(PreTrainedPolicy):
             logging.error(f"Could not import uncertainty computation: {e}")
             return None
         
-        # Compute uncertainty scores
+        # Compute uncertainty scores using embeddings from the model
         uncertainties = compute_uncertainty_scores(
-            image_embeddings=self.latest_image_embeddings,
+            image_embeddings=self.model.latest_image_embeddings,
             rnd_models=self.rnd_models,
             return_spatial_maps=return_spatial_maps,
         )

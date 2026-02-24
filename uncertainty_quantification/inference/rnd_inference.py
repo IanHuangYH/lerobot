@@ -192,33 +192,52 @@ def compute_uncertainty_scores(
         
         model = rnd_models[camera]
         
-        # embeddings shape: (1, 256, 2048)
-        # Remove batch dimension for processing
-        tokens = embeddings.squeeze(0)  # (256, 2048)
+        # embeddings shape: (batch_size, 256, 2048) where batch_size is number of parallel envs
+        batch_size = embeddings.shape[0]
+        num_tokens = embeddings.shape[1]
+        
+        # Reshape to (batch_size * num_tokens, 2048) to process all tokens from all batches
+        tokens = embeddings.reshape(-1, embeddings.shape[-1])  # (batch_size * 256, 2048)
+        
+        # Convert to float32 if needed (Pi0.5 uses bfloat16, RND models use float32)
+        if tokens.dtype != torch.float32:
+            tokens = tokens.to(dtype=torch.float32)
+        
+        # Ensure tokens are on the same device as the RND model
+        model_device = next(model.parameters()).device
+        if tokens.device != model_device:
+            tokens = tokens.to(model_device)
         
         with torch.no_grad():
             # Batch process all tokens through RND
-            token_uncertainty = model(tokens)  # (256,) - per-token uncertainty scores
+            token_uncertainty = model(tokens)
+            
+            # Reshape back to (batch_size, num_tokens)
+            token_uncertainty = token_uncertainty.reshape(batch_size, num_tokens)
         
-        # Store per-token uncertainties
-        token_uncertainties[camera] = token_uncertainty
+        # Store per-token uncertainties (keep batch dimension)
+        token_uncertainties[camera] = token_uncertainty  # (batch_size, 256)
         
-        # Compute overall camera uncertainty (mean across tokens)
-        camera_uncertainty = token_uncertainty.mean().item()
-        uncertainties[camera] = camera_uncertainty
+        # Compute overall camera uncertainty (mean across tokens for each batch item)
+        camera_uncertainty = token_uncertainty.mean(dim=-1)  # (batch_size,)
+        uncertainties[camera] = camera_uncertainty  # Keep as tensor
         camera_scores.append(camera_uncertainty)
         
         # Generate spatial uncertainty map if requested
         if return_spatial_maps:
-            # Reshape (256,) -> (16, 16) spatial map
-            spatial_map = token_uncertainty.view(16, 16)
+            # Reshape (batch_size, 256) -> (batch_size, 16, 16) spatial map
+            spatial_map = token_uncertainty.view(batch_size, 16, 16)
             spatial_maps[camera] = spatial_map
     
-    # Compute overall uncertainty (mean across cameras)
+    # Compute overall uncertainty (mean across cameras for each batch item)
     if len(camera_scores) > 0:
-        uncertainties['overall'] = sum(camera_scores) / len(camera_scores)
+        # Stack camera scores: list of (batch_size,) -> (num_cameras, batch_size)
+        stacked_scores = torch.stack(camera_scores, dim=0)  # (num_cameras, batch_size)
+        uncertainties['overall'] = stacked_scores.mean(dim=0)  # (batch_size,)
     else:
-        uncertainties['overall'] = 0.0
+        # No valid cameras, return zeros
+        batch_size = next(iter(image_embeddings.values())).shape[0]
+        uncertainties['overall'] = torch.zeros(batch_size)
     
     # Add spatial maps and token uncertainties to output
     if return_spatial_maps:
@@ -334,3 +353,73 @@ def upsample_spatial_map(
     upsampled = upsampled.squeeze(0).squeeze(0)
     
     return upsampled
+
+
+def extract_episode_uncertainty(all_uncertainty_scores: list, batch_idx: int) -> list:
+    """
+    Extract a single episode's uncertainty scores from batched rollout data.
+    
+    This function processes uncertainty data collected during batched policy evaluation,
+    extracting the scores for a specific episode (batch element) from the batched tensors.
+    
+    Args:
+        all_uncertainty_scores: List of rollout step dictionaries, each containing:
+            - 'step': int - Rollout step index
+            - 'uncertainty': dict with batched tensors:
+                - 'overall': Tensor of shape (batch_size,)
+                - '{camera}': Tensor of shape (batch_size,) for each camera
+                - 'spatial_maps': Dict[str, Tensor] of shape (batch_size, 16, 16)
+                - 'token_uncertainties': Dict[str, Tensor] of shape (batch_size, 256)
+        batch_idx: Which batch sample to extract (0 to batch_size-1)
+    
+    Returns:
+        List of per-step uncertainty dictionaries with batch dimension removed:
+            - Scalars for overall/camera scores
+            - (16, 16) tensors for spatial maps
+            - (256,) tensors for token uncertainties
+    
+    Example:
+        >>> batched_scores = [{'step': 0, 'uncertainty': {'overall': tensor([0.1, 0.2])}}]
+        >>> episode_0 = extract_episode_uncertainty(batched_scores, 0)
+        >>> episode_0[0]['uncertainty']['overall']  # 0.1 (scalar)
+    """
+    extracted_scores = []
+    
+    for step_data in all_uncertainty_scores:
+        extracted_step = {
+            'step': step_data['step'],
+            'uncertainty': {}
+        }
+        
+        # Extract batch_idx from uncertainty dict
+        for key, value in step_data['uncertainty'].items():
+            if key == 'spatial_maps':
+                # Handle nested spatial maps dict
+                extracted_step['uncertainty']['spatial_maps'] = {}
+                for camera, spatial_map in value.items():
+                    # spatial_map shape: (batch_size, 16, 16)
+                    if isinstance(spatial_map, torch.Tensor) and spatial_map.dim() == 3:
+                        extracted_step['uncertainty']['spatial_maps'][camera] = spatial_map[batch_idx]
+                    else:
+                        extracted_step['uncertainty']['spatial_maps'][camera] = spatial_map
+            
+            elif key == 'token_uncertainties':
+                # Handle nested token uncertainties dict
+                extracted_step['uncertainty']['token_uncertainties'] = {}
+                for camera, token_unc in value.items():
+                    # token_unc shape: (batch_size, 256)
+                    if isinstance(token_unc, torch.Tensor) and token_unc.dim() == 2:
+                        extracted_step['uncertainty']['token_uncertainties'][camera] = token_unc[batch_idx]
+                    else:
+                        extracted_step['uncertainty']['token_uncertainties'][camera] = token_unc
+            
+            else:
+                # Handle overall and per-camera scores (tensors of shape (batch_size,))
+                if isinstance(value, torch.Tensor) and value.dim() == 1:
+                    extracted_step['uncertainty'][key] = value[batch_idx].item()  # Convert to scalar
+                else:
+                    extracted_step['uncertainty'][key] = value
+        
+        extracted_scores.append(extracted_step)
+    
+    return extracted_scores

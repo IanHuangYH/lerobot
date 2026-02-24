@@ -186,20 +186,7 @@ def rollout(
     # Enable attention map saving if requested and policy supports it
     supports_attention = hasattr(policy, "model") and hasattr(policy.model, "enable_attention_map_saving")
     if attention_dir is not None and supports_attention:
-        policy.model.enable_attention_map_saving()
-        logging.info("Attention map saving enabled for this rollout.")
-    
-    # Enable uncertainty prediction if requested and policy supports it
-    supports_uncertainty = hasattr(policy, "rnd_models") and policy.rnd_models is not None
-    if uncertainty_dir is not None and not supports_uncertainty:
-        logging.warning(
-            f"Uncertainty prediction requested but policy has no RND models loaded. "
-            "Uncertainty scores will not be computed."
-        )
-        
-        # Check if torch.compile might interfere
-        # Note: @torch.no_grad() also adds __wrapped__, so we check the type instead
-        # Compiled methods become 'function' type, while normal methods stay 'method' type
+        # Check if torch.compile might interfere with attention map saving
         is_compiled = (
             hasattr(policy.model, 'sample_actions') and 
             type(policy.model.sample_actions).__name__ == 'function'
@@ -216,10 +203,21 @@ def rollout(
                 "   \n"
                 "   The evaluation will continue but NO attention maps will be saved."
             )
+        else:
+            policy.model.enable_attention_map_saving()
+            logging.info("Attention map saving enabled for this rollout.")
     elif attention_dir is not None and not supports_attention:
         logging.warning(
             f"Attention map saving requested but policy type '{type(policy).__name__}' does not support it. "
             "Attention maps will not be saved."
+        )
+    
+    # Enable uncertainty prediction if requested and policy supports it
+    supports_uncertainty = hasattr(policy, "rnd_models") and policy.rnd_models is not None
+    if uncertainty_dir is not None and not supports_uncertainty:
+        logging.warning(
+            f"Uncertainty prediction requested but policy has no RND models loaded. "
+            "Uncertainty scores will not be computed."
         )
 
     # Reset the policy and environments.
@@ -379,20 +377,26 @@ def rollout(
     # Save uncertainty scores if enabled and supported
     if uncertainty_dir is not None and supports_uncertainty:
         if all_uncertainty_scores:
+            # Import extraction function from uncertainty module
+            from uncertainty_quantification.inference import extract_episode_uncertainty
+            
             # Save one file per episode in the batch
             uncertainty_dir.mkdir(parents=True, exist_ok=True)
             for batch_idx in range(env.num_envs):
                 episode_idx = n_episodes_so_far + batch_idx
                 uncertainty_path = uncertainty_dir / f"episode_{episode_idx:05d}_uncertainty.pt"
                 
+                # Extract this episode's uncertainty scores from the batch
+                episode_uncertainty_scores = extract_episode_uncertainty(all_uncertainty_scores, batch_idx)
+                
                 # Save all rollout steps' uncertainty scores for this episode
                 torch.save(
                     {
                         "episode_index": episode_idx,
                         "batch_index": batch_idx,
-                        "rollout_steps": all_uncertainty_scores,
+                        "rollout_steps": episode_uncertainty_scores,  # Only this episode's data
                         "metadata": {
-                            "num_steps": len(all_uncertainty_scores),
+                            "num_steps": len(episode_uncertainty_scores),
                         },
                     },
                     uncertainty_path,
