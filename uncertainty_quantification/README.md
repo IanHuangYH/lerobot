@@ -15,7 +15,7 @@ This module implements uncertainty prediction for the Pi0.5 Vision-Language-Acti
 1. ✅ **Train on individual tokens** (not mean-pooled) to enable spatial uncertainty heatmaps
 2. ✅ **Separate RND per camera** (agentview, wrist) - 2048-D input each
 3. ✅ **Train 4 RND models per task type** (spatial, object, goal, long) for balanced generalization
-4. ✅ **Sample 64 tokens per camera per frame** during training to reduce dataset size
+4. ✅ **Use all 256 tokens per camera per frame** during training for maximum spatial coverage
 5. ✅ **Batch process tokens during inference** for efficiency
 
 ---
@@ -41,11 +41,11 @@ LIBERO Demonstration Frame
     ↓
 Pi0.5 SigLIP Encoder → (1, 256, 2048) per camera
     ↓
-Random Sample 64 tokens per camera
+Save all 256 tokens per camera
     ↓
 Save tokens: (2048,) embeddings
     ↓
-Dataset: (N_frames × 64 × 2_cameras, 2048)
+Dataset: (N_frames × 256 × 2_cameras, 2048)
 ```
 
 ### **Inference Data Flow**
@@ -77,7 +77,7 @@ We consider three alternative architectures for RND-based uncertainty quantifica
 
 **Architecture**:
 - **RND Input**: Individual `2048-D` SigLIP token embeddings (pure semantic features)
-- **Training Data**: Randomly sample 64 tokens per camera per frame
+- **Training Data**: All 256 tokens per camera per frame (no sampling)
 - **Inference**: Process all 256 tokens per camera → per-token uncertainty scores
 - **Output**: Spatial uncertainty heatmap `(16, 16)` + overall score
 
@@ -85,7 +85,7 @@ We consider three alternative architectures for RND-based uncertainty quantifica
 - ✅ Training/inference distributions match exactly (both use individual tokens)
 - ✅ Enables spatial uncertainty heatmaps (which token regions are novel?)
 - ✅ VLA-aligned: Leverages spatial generalization (doesn't penalize object rearrangements)
-- ✅ Moderate dataset size with sampling: ~70 GB per task type (all 500 episodes)
+- ✅ Full token storage (256 tokens/frame): ~76 GB per camera, ~152 GB per task type (all 500 episodes)
 
 **When It Detects Uncertainty**:
 - Novel objects (unseen textures, shapes, colors)
@@ -302,6 +302,8 @@ For Option 3: 4 RND models (one per task type, cameras combined) = **4 total mod
 
 #### **Sample 64 Tokens per Frame** (Option 1 & 2)
 
+> **Note**: This section describes the original design option. The **actual implementation uses all 256 tokens** (no sampling) for maximum spatial coverage. See Phase 1 implementation details below.
+
 **LIBERO Dataset Structure**:
 - 10 task files per type × 50 demos per file = **500 episodes per task type**
 - Average episode length: ~137 frames
@@ -334,36 +336,36 @@ For Option 3: 4 RND models (one per task type, cameras combined) = **4 total mod
 ```
 lerobot/uncertainty_quantification/rnd_dataset/
 ├── spatial/
-│   ├── agentview_tokens_00000.pt # First chunk: (128000, 2048) ~1 GB
+│   ├── agentview_tokens_00000.pt # First chunk: (512000, 2048) ~2 GB
 │   ├── agentview_tokens_00001.pt # Second chunk
-│   ├── ... (35 chunks total)
-│   ├── agentview_tokens_00034.pt # Last chunk (partial)
-│   ├── wrist_tokens_00000.pt     # First chunk: (128000, 2048) ~1 GB
+│   ├── ... (38 chunks total)
+│   ├── agentview_tokens_00037.pt # Last chunk (partial: ~73,792 tokens)
+│   ├── wrist_tokens_00000.pt     # First chunk: (512000, 2048) ~2 GB
 │   ├── wrist_tokens_00001.pt     # Second chunk
-│   ├── ... (35 chunks total)
-│   ├── wrist_tokens_00034.pt     # Last chunk (partial)
+│   ├── ... (38 chunks total)
+│   ├── wrist_tokens_00037.pt     # Last chunk (partial)
 │   └── collection_stats.json     # Metadata
 ├── object/
 │   ├── agentview_tokens_00000.pt
-│   ├── ... (70 chunk files total)
+│   ├── ... (76 chunk files total: 38 per camera)
 │   └── collection_stats.json
 ├── goal/
 │   ├── agentview_tokens_00000.pt
-│   ├── ... (70 chunk files total)
+│   ├── ... (76 chunk files total)
 │   └── collection_stats.json
 └── long/
     ├── agentview_tokens_00000.pt
-    ├── ... (70 chunk files total)
+    ├── ... (76 chunk files total)
     └── collection_stats.json
 
 # Chunk Details:
-# - Chunk size: 2000 frames × 64 tokens = 128,000 tokens per chunk
-# - Shape per chunk: (128000, 2048) for full chunks, smaller for last chunk
-# - File size: ~1 GB per chunk (with 64 tokens/frame)
-# - Total chunks: ~35 per camera (for 500 episodes × 137 avg frames ÷ 2000)
+# - Chunk size: ~2000 frames × 256 tokens = 512,000 tokens per chunk
+# - Shape per chunk: (512000, 2048) for full chunks, smaller for last chunk
+# - File size: ~2 GB per chunk (with all 256 tokens/frame)
+# - Total chunks: 38 per camera (for 500 episodes, ~74,507 frames total)
 # - Naming: Zero-padded 5-digit index ({camera}_tokens_{idx:05d}.pt)
 #
-# Total dataset size per task type: ~70 GB (2 cameras × 35 chunks × 1 GB)
+# Total dataset size per task type: ~152 GB (2 cameras × 38 chunks × 2 GB)
 # Configurable via --num-episodes and --max-frames-per-chunk flags
 ```
 
@@ -373,7 +375,7 @@ lerobot/uncertainty_quantification/rnd_dataset/
 # Option 1: Load all chunks (for small datasets or experimentation)
 from uncertainty_quantification.dataset import load_rnd_dataset
 tokens = load_rnd_dataset("rnd_dataset", "spatial", "agentview")
-# Returns: torch.Tensor of shape (4.38M, 2048)
+# Returns: torch.Tensor of shape (19.07M, 2048)
 
 # Option 2: On-demand loading for training (memory-efficient)
 from uncertainty_quantification.dataset import ChunkedRNDDataset
@@ -447,7 +449,7 @@ eval_logs/{eval_name}/uncertainty/
 | Vision encoder output | `img_embs` | `(1, 256, 2048)` | Per camera |
 | Sample tokens | `sampled_tokens` | `(64, 2048)` | Random subset |
 | Save to dataset | `token` | `(2048,)` | Individual embedding |
-| Full dataset | `tokens` | `(4.38M, 2048)` | All sampled tokens (default: 500 episodes) |
+| Full dataset | `tokens` | `(19.07M, 2048)` | All tokens per camera (default: 500 episodes, 256 tokens/frame) |
 | **RND Training** |
 | RND input | `token_emb` | `(2048,)` | Single token |
 | Target output | `target_feat` | `(512,)` | Random network output |
@@ -505,16 +507,22 @@ nn.Sequential(
    - Accumulate tokens and save in chunks (2000 frames per chunk)
 4. Save chunked datasets per task type and camera
 
-**Output** (with default settings: all 500 episodes, 64 tokens sampled, 2000 frames/chunk):
+**Output** (with actual implementation: all 500 episodes, 256 tokens/frame, ~2000 frames/chunk):
 - Chunked format: `{camera}_tokens_00000.pt`, `{camera}_tokens_00001.pt`, etc.
-  - ~35 chunks per camera (each ~1 GB for 64 tokens/frame)
+  - **38 chunks per camera** (each ~2 GB for 256 tokens/frame)
+  - Chunk size: 512,000 tokens per chunk (variable for last chunk)
 - `uncertainty_quantification/rnd_dataset/{task_type}/collection_stats.json` (metadata)
-- **Total size per task type**: ~70 GB (2 cameras × 35 chunks × 1 GB)
-- **Total for 3 task types**: ~210 GB (spatial, object, goal)
+- **Actual statistics** (from collection_stats.json):
+  - Total tokens per camera: 19,073,792
+  - Total frames: 74,507
+  - Tokens per frame: 256 (full, no sampling)
+  - Num chunks: 38
+- **Total size per task type**: ~152 GB (2 cameras × 38 chunks × 2 GB)
+- **Total for 3 task types**: ~456 GB (spatial, object, goal)
 
 **Memory Management**:
 - Data saved in chunks to avoid OOM errors during collection
-- Default chunk size: 2000 frames (~1 GB per chunk with 64 tokens)
+- Default chunk size: 2000 frames (~2 GB per chunk with 256 tokens)
 - Explicit garbage collection after each chunk save
 - Can process full dataset even on systems with limited RAM
 
@@ -542,9 +550,9 @@ python -m uncertainty_quantification.scripts.collect_rnd_training_data \
 **Configuration Options**:
 - `--task-type`: Choose from `spatial`, `object`, `goal`, `long`
 - `--num-episodes`: Number of episodes to use (default: `None` = all ~500)
-- `--tokens-per-frame`: Tokens to sample per camera (default: `64`)
+- `--tokens-per-frame`: Tokens to sample per camera (default: `256`, legacy option supports `64`)
 - `--max-frames-per-chunk`: Max frames per chunk file (default: `2000`)
-- `--save-full-tokens`: Save all 256 tokens instead of sampling
+- `--save-full-tokens`: Save all 256 tokens (default: `True` in current implementation)
 - `--libero-dataset-dir`: Path to LIBERO datasets (default: `third_party/LIBERO/datasets`)
 - `--output-dir`: Output directory (default: `uncertainty_quantification/rnd_dataset`)
 - `--policy-path`: Pi0.5 checkpoint (default: `pi-0-5-preview`)
@@ -636,20 +644,50 @@ uncertainty_quantification/rnd_save_models/
 ```
 
 **Memory Management** (Critical for Large Datasets):
-- ✅ Uses `ChunkedRNDDataset` for on-demand chunk loading
-- ✅ Only 1 chunk (~1 GB) in memory at a time
+- ✅ Uses `ChunkedRNDDataset` with **smart LRU cache**
+- ✅ **Smart pre-loading**: If `max_cached_chunks >= 60% of total chunks`, pre-loads all specified chunks upfront
+  - With `max_cached_chunks=38`: All chunks pre-loaded → **100% cache hit rate**, ~76 GB RAM
+  - With `max_cached_chunks=25`: First 25 chunks pre-loaded → ~66% coverage, ~50 GB RAM
+  - With `max_cached_chunks=4`: Lazy loading with LRU eviction → ~40-50% hit rate, ~8 GB RAM
+- ✅ **LRU eviction** for smaller cache sizes (keeps most-used chunks in memory)
+- ✅ **Cache statistics tracking**: Reports hit/miss rates, memory usage after training
+- ✅ **BFloat16 to Float32 conversion**: Handles dtype mismatch from data collection
 - ✅ Batch size 256 = ~2 MB per batch in GPU
-- ✅ Total memory during training: ~1.2 GB
-- ✅ No risk of OOM even with 4.38M training tokens per camera
+- ✅ Configurable via `--max-cached-chunks` (default: 38 for maximum speed)
 
 **Training Features**:
-- ✅ Early stopping with validation split
+- ✅ Early stopping with validation split (90/10)
 - ✅ TensorBoard logging (train/val loss, learning rate)
-- ✅ Cosine learning rate scheduling
+- ✅ Cosine learning rate scheduling (1e-4 → 1e-6)
 - ✅ Automatic checkpoint saving (best + final + timestamped)
 - ✅ Training progress plots (PNG)
 - ✅ Full hyperparameter logging for reproducibility
 - ✅ Deterministic training with seed control
+- ✅ **Nested progress bars**: Epoch-level + batch-level with real-time loss display
+- ✅ **Cache statistics reporting**: Hit rate, memory usage, chunks loaded
+- ✅ **Parallel camera training**: Both cameras train simultaneously per task (saves 50% time)
+
+**Monitoring Options**:
+1. **Standard mode** (`train_all_rnd.sh`):
+   - Both cameras train in parallel with log file redirection
+   - Logs saved to: `{task}_{camera}_training.log`
+   - Use `tail -f spatial_agentview_training.log` to monitor progress
+   
+2. **tmux split-screen mode** (`train_all_rnd_tmux.sh`, **recommended**):
+   - Vertical split: agentview (left) | wrist (right)
+   - Live progress bars visible in each pane
+   - Navigate panes: `Ctrl+b` then arrow keys
+   - Detach: `Ctrl+b d` | Reattach: `tmux attach -t rnd_training`
+   - Kill session: `tmux kill-session -t rnd_training`
+
+**Performance Notes**:
+- **Smart pre-loading** eliminates disk I/O bottleneck (100% cache hit rate)
+- Training time per model (~19M tokens):
+  - With `max_cached_chunks=38`: ~2-3 hours (100% cache hit, **fastest**)
+  - With `max_cached_chunks=4`: ~8-12 hours (40-50% cache hit)
+- Parallel training: 4 tasks × 2 cameras = ~12-18 hours total (with pre-loading)
+- RAM requirements scale linearly: ~2GB per cached chunk
+- See [PHASE2_SUMMARY.md](uncertainty_quantification/PHASE2_SUMMARY.md) for detailed performance analysis
 
 **Usage**:
 
@@ -670,11 +708,19 @@ python -m uncertainty_quantification.scripts.train_rnd \
   --epochs 10 \
   --batch-size 128
 
-# Train all 8 models (spatial, object, goal, long × agentview, wrist)
+# Train all 8 models (both cameras in parallel per task)
 ./uncertainty_quantification/scripts/train_all_rnd.sh
 
 # Train with custom settings
-EPOCHS=50 BATCH_SIZE=128 ./uncertainty_quantification/scripts/train_all_rnd.sh
+EPOCHS=50 BATCH_SIZE=256 MAX_CACHED_CHUNKS=38 ./uncertainty_quantification/scripts/train_all_rnd.sh
+
+# Train with tmux split-screen monitoring (recommended!)
+./uncertainty_quantification/scripts/train_all_rnd_tmux.sh
+
+# Adjust cache size for different RAM configurations
+MAX_CACHED_CHUNKS=4 ./uncertainty_quantification/scripts/train_all_rnd.sh    # 8GB RAM
+MAX_CACHED_CHUNKS=25 ./uncertainty_quantification/scripts/train_all_rnd.sh   # 50GB RAM
+MAX_CACHED_CHUNKS=38 ./uncertainty_quantification/scripts/train_all_rnd.sh   # 76GB+ RAM (fastest)
 
 # Monitor training in TensorBoard
 tensorboard --logdir uncertainty_quantification/rnd_save_models/
@@ -685,11 +731,14 @@ tensorboard --logdir uncertainty_quantification/rnd_save_models/spatial_agentvie
 
 **Files Created**: ✅
 - `uncertainty_quantification/rnd_models/rnd_models.py` - RND_OE model with checkpoint I/O
-- `uncertainty_quantification/rnd_models/rnd_trainer.py` - Training loop with TensorBoard
+- `uncertainty_quantification/rnd_models/rnd_trainer.py` - Training loop with nested progress bars, cache stats
 - `uncertainty_quantification/rnd_models/__init__.py` - Package exports
-- `uncertainty_quantification/scripts/train_rnd.py` - CLI training script
-- `uncertainty_quantification/scripts/train_all_rnd.sh` - Batch training for all models
+- `uncertainty_quantification/scripts/train_rnd.py` - CLI training script with --max-cached-chunks
+- `uncertainty_quantification/scripts/train_all_rnd.sh` - Parallel training (both cameras per task)
+- `uncertainty_quantification/scripts/train_all_rnd_tmux.sh` - tmux split-screen monitoring
 - `uncertainty_quantification/configs/rnd_training.yaml` - Default hyperparameters
+- `uncertainty_quantification/test/test_rnd_training.sh` - Test script for validation
+- `uncertainty_quantification/PHASE2_SUMMARY.md` - Complete implementation guide with performance notes
 
 ---
 
@@ -885,7 +934,7 @@ rnd:
 
 ## 🎯 Success Metrics
 
-1. **Data Collection**: Successfully extract ~4.38M tokens per camera per task type (500 episodes)
+1. **Data Collection**: Successfully extract ~19.07M tokens per camera per task type (500 episodes, 256 tokens/frame)
 2. **Training**: RND converges (predictor MSE stabilizes)
 3. **Inference**: Uncertainty scores correlate with task success/failure
 4. **Visualization**: Clear spatial heatmaps showing high uncertainty in relevant regions
