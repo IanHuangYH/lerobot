@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 set -e
 
-CONTAINER_NAME="lerobot-dev"
-IMAGE_NAME="lerobot-dev:latest"
+DOCKER_IMG_NAME=lerobot_uq-dev:latest
 
-WORKSPACE="$HOME/code/vla/lerobot/workspace"
-OUTPUTS="$HOME/code/vla/lerobot/outputs"
-CACHE_HF="$HOME/code/vla/lerobot/cache_hf"
-CACHE_PIP="$HOME/code/vla/lerobot/cache_pip"
-CACHE_RUNTIME="$HOME/code/vla/lerobot/cache_runtime"
+CONTAINER_NAME="lerobot_uq-dev"
+IMAGE_NAME=$DOCKER_IMG_NAME
+
+PROJECT="lerobot_libero_uq"
+WORKSPACE="$HOME/code/vla/$PROJECT/workspace"
+OUTPUTS="$HOME/code/vla/$PROJECT/outputs"
+CACHE_HF="$HOME/code/vla/$PROJECT/cache_hf"
+CACHE_PIP="$HOME/code/vla/$PROJECT/cache_pip"
+CACHE_RUNTIME="$HOME/code/vla/$PROJECT/cache_runtime"
 
 # Create directories if they do not exist
 mkdir -p "$WORKSPACE" "$OUTPUTS" "$CACHE_HF" "$CACHE_PIP" "$CACHE_RUNTIME"
+mkdir -p "$CACHE_RUNTIME/triton" "$CACHE_RUNTIME/torchinductor" "$CACHE_RUNTIME/xdg"
 
 # If container already exists, do not recreate it
 if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
