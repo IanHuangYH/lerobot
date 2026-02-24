@@ -222,15 +222,23 @@ class RNDTrainer:
         val_losses = []
         
         print("Starting training...\n")
-        progress_bar = tqdm(range(epochs), desc="Training Progress")
+        progress_bar = tqdm(range(epochs), desc="Training Progress", position=0)
         
         for epoch in progress_bar:
             # Training phase
             model.train()
             epoch_train_loss = 0.0
             
-            for batch in train_loader:
-                batch = batch.to(self.device)  # (batch_size, 2048)
+            # Add batch-level progress bar
+            batch_progress = tqdm(
+                train_loader, 
+                desc=f"Epoch {epoch+1}/{epochs} [Train]",
+                leave=False,
+                position=1
+            )
+            
+            for batch in batch_progress:
+                batch = batch.to(self.device).float()  # (batch_size, 2048) - convert to float32
                 
                 # Forward pass
                 loss = model(batch).mean()
@@ -241,6 +249,11 @@ class RNDTrainer:
                 optimizer.step()
                 
                 epoch_train_loss += loss.item()
+                
+                # Update batch progress bar with current loss
+                batch_progress.set_postfix({'loss': f'{loss.item():.4f}'})
+            
+            batch_progress.close()
             
             # Compute average training loss
             epoch_train_loss /= len(train_loader)
@@ -250,11 +263,22 @@ class RNDTrainer:
             model.eval()
             epoch_val_loss = 0.0
             
+            # Add validation progress bar
+            val_progress = tqdm(
+                val_loader,
+                desc=f"Epoch {epoch+1}/{epochs} [Val]  ",
+                leave=False,
+                position=1
+            )
+            
             with torch.no_grad():
-                for batch in val_loader:
-                    batch = batch.to(self.device)
+                for batch in val_progress:
+                    batch = batch.to(self.device).float()  # Convert to float32
                     loss = model(batch).mean()
                     epoch_val_loss += loss.item()
+                    val_progress.set_postfix({'loss': f'{loss.item():.4f}'})
+            
+            val_progress.close()
             
             epoch_val_loss /= len(val_loader)
             val_losses.append(epoch_val_loss)

@@ -18,32 +18,42 @@ echo "============================================================"
 echo ""
 
 # Check if test dataset exists from Phase 1
-TEST_DATASET_DIR="uncertainty_quantification/rnd_dataset_test/spatial"
+TEST_DATASET_DIR="uncertainty_quantification/rnd_dataset"
+TASK_TYPE="object"
+FULL_TEST_DATASET_PATH=$TEST_DATASET_DIR/$TASK_TYPE
 
-if [ -d "$TEST_DATASET_DIR" ]; then
-    echo "✓ Found test dataset from Phase 1: $TEST_DATASET_DIR"
+OUTPUT_DIR="uncertainty_quantification/train_model_rnd_test"
+MAX_CACHED_CHUNKS=${MAX_CACHED_CHUNKS:-38}
+BATCH_SIZE=256
+EPOCHS=3
+
+
+
+if [ -d "$FULL_TEST_DATASET_PATH" ]; then
+    echo "✓ Found test dataset from Phase 1: $FULL_TEST_DATASET_PATH"
     echo ""
     
     # Test training on existing test data
     echo "Testing training with agentview camera (3 epochs)..."
     python -m uncertainty_quantification.scripts.train_rnd \
-        --task-type spatial \
+        --task-type $TASK_TYPE \
         --camera agentview \
-        --dataset-dir uncertainty_quantification/rnd_dataset_test \
-        --output-dir uncertainty_quantification/test/rnd_models_test \
-        --epochs 3 \
-        --batch-size 64 \
+        --dataset-dir $TEST_DATASET_DIR \
+        --output-dir $OUTPUT_DIR \
+        --epochs $EPOCHS \
+        --batch-size $BATCH_SIZE \
         --patience 5 \
+        --max-cached-chunks $MAX_CACHED_CHUNKS \
         --seed 42
     
     echo ""
     echo "✓ Training test completed successfully!"
     echo ""
     echo "Check outputs at:"
-    echo "  uncertainty_quantification/test/rnd_models_test/spatial_agentview/"
+    echo "  $OUTPUT_DIR/object_agentview/"
     echo ""
     echo "View training in TensorBoard:"
-    echo "  tensorboard --logdir uncertainty_quantification/test/rnd_models_test/spatial_agentview/tensorboard/"
+    echo "  tensorboard --logdir $OUTPUT_DIR/object_agentview/tensorboard/"
     echo ""
 else
     echo "⚠ Test dataset not found: $TEST_DATASET_DIR"
@@ -53,7 +63,7 @@ else
     echo ""
     echo "Or test training directly on full dataset:"
     echo "  python -m uncertainty_quantification.scripts.train_rnd \\"
-    echo "    --task-type spatial \\"
+    echo "    --task-type object \\"
     echo "    --camera agentview \\"
     echo "    --epochs 3 \\"
     echo "    --batch-size 64"

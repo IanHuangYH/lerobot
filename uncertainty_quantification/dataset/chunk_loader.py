@@ -101,7 +101,7 @@ class ChunkedRNDDataset(torch.utils.data.Dataset):
             train_rnd(batch)
     """
     
-    def __init__(self, dataset_dir: Path, camera: str, max_cached_chunks: int = 4):
+    def __init__(self, dataset_dir: Path, camera: str, max_cached_chunks: int = 4, ratio_preload: float = 0.6):
         """
         Args:
             dataset_dir: Path to task dataset directory
@@ -133,11 +133,31 @@ class ChunkedRNDDataset(torch.utils.data.Dataset):
         
         # LRU cache for multiple chunks (OrderedDict maintains insertion order)
         self._chunk_cache: OrderedDict[int, torch.Tensor] = OrderedDict()
-        self._chunk_cache[0] = first_chunk  # Cache first chunk
         
         # Statistics for monitoring cache performance
         self._cache_hits = 0
         self._cache_misses = 0
+        
+        # Smart pre-loading: if caching >60% of chunks, pre-load them upfront
+        if max_cached_chunks >= ratio_preload * self.num_chunks:
+            chunks_to_preload = min(max_cached_chunks, self.num_chunks)
+            print(f"Cache size ({max_cached_chunks}) >= 60% of chunks ({self.num_chunks})")
+            print(f"Pre-loading {chunks_to_preload} chunks into cache (~{chunks_to_preload * 2:.0f} GB)...")
+            
+            # Pre-load chunks into cache
+            self._chunk_cache[0] = first_chunk  # Already loaded
+            for i in range(1, chunks_to_preload):
+                chunk_file = self.dataset_dir / f"{camera}_tokens_{i:05d}.pt"
+                chunk = torch.load(chunk_file)
+                self._chunk_cache[i] = chunk
+                if (i + 1) % 5 == 0 or i == chunks_to_preload - 1:
+                    print(f"  Loaded {i+1}/{chunks_to_preload} chunks...")
+            
+            print(f"✓ Pre-loaded {chunks_to_preload} chunks! Cache ready, Memory: ~{chunks_to_preload * 2:.0f} GB")
+        else:
+            # Just load first chunk for normal caching
+            print(f"Using lazy chunk caching: {max_cached_chunks}/{self.num_chunks} chunks (~{max_cached_chunks * 2:.0f} GB)")
+            self._chunk_cache[0] = first_chunk  # Cache first chunk
     
     def __len__(self) -> int:
         """Return total number of tokens across all chunks."""
