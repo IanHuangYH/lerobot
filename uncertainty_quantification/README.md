@@ -493,7 +493,9 @@ nn.Sequential(
 
 ## 🚀 Implementation Phases
 
-### **Phase 1: Data Collection for RND Training**
+### **Phase 1: Data Collection for RND Training** ✅
+
+**Status**: Complete (February 2026)
 
 **Goal**: Extract and save token embeddings from LIBERO demonstrations in chunks
 
@@ -594,8 +596,8 @@ python -m uncertainty_quantification.scripts.collect_rnd_training_data \
 ```
 uncertainty_quantification/rnd_save_models/
 ├── spatial_agentview/
-│   ├── model.ckpt                    # Final checkpoint (easy loading)
-│   ├── best_model.ckpt               # Best validation loss
+│   ├── best_model.ckpt               # Best validation loss (used for inference)
+│   ├── model.ckpt                    # Final checkpoint (fallback)
 │   ├── model_epoch_XX_loss_XXX_seed_42_YYYY-MM-DD_HH-MM.ckpt  # Timestamped
 │   ├── metadata.json                 # Model config + hyperparameters
 │   ├── training_progress.png         # Loss curves plot
@@ -852,25 +854,35 @@ To determine if alternative options (2 or 3) outperform the baseline (Option 1):
 lerobot/
 ├── uncertainty_quantification/
 │   ├── README.md                    # This file
+│   ├── PHASE2_SUMMARY.md            # Phase 2 implementation guide
+│   ├── PHASE3_SUMMARY.md            # Phase 3 implementation guide
 │   ├── __init__.py
 │   ├── configs/
 │   │   ├── rnd_data_collection.yaml
 │   │   └── rnd_training.yaml
 │   ├── dataset/
 │   │   ├── __init__.py
-│   │   └── data_collection.py       # Phase 1: Extract embeddings
+│   │   ├── data_collection.py       # Phase 1: Extract embeddings
+│   │   ├── chunk_loader.py          # Load chunked datasets
+│   │   └── example_usage.py         # Examples
+│   ├── inference/                   # Phase 3: Inference utilities
+│   │   ├── __init__.py
+│   │   └── rnd_inference.py         # RND model loading & uncertainty computation
 │   ├── scripts/
 │   │   ├── collect_rnd_training_data.py # Phase 1 CLI
 │   │   ├── collect_all_tasks.sh         # Batch collection
-│   │   └── train_rnd.py                 # Phase 2 CLI
+│   │   ├── train_rnd.py                 # Phase 2 CLI
+│   │   ├── train_all_rnd.sh             # Train all 8 models
+│   │   └── train_all_rnd_tmux.sh        # tmux monitoring
 │   ├── test/
-│   │   └── test_data_collection.sh      # Test script
-│   ├── rnd/
+│   │   ├── test_data_collection.sh      # Phase 1 test
+│   │   ├── test_rnd_training.sh         # Phase 2 test
+│   │   └── test_uncertainty_inference.sh # Phase 3 test
+│   ├── rnd_models/
 │   │   ├── __init__.py
-│   │   ├── rnd_models.py            # Adapted from fiper_template
-│   │   ├── rnd_trainer.py           # Training logic
-│   │   └── utils.py
-│   └── visualization.py             # Phase 4: Create heatmaps
+│   │   ├── rnd_models.py            # RND_OE model class
+│   │   └── rnd_trainer.py           # Training logic with chunked loading
+│   └── visualization.py             # Phase 4: Create heatmaps (TODO)
 ├── data/
 │   ├── rnd_training/
 │   │   ├── spatial/

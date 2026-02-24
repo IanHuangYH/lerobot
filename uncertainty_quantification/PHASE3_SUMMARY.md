@@ -36,9 +36,10 @@ Phase 3 successfully integrates RND-based uncertainty quantification into the Pi
 - **Attributes Added**:
   - `rnd_models`: Dict storing loaded RND models per camera
   - `latest_image_embeddings`: Dict caching vision encoder outputs
+  - `uncertainty_enabled`: Boolean flag indicating if uncertainty prediction is enabled
 - **Methods Added**:
-  - `enable_uncertainty_prediction(rnd_models)`: Initialize RND models
-  - `get_uncertainty_scores()`: Compute uncertainty from latest embeddings
+  - `enable_uncertainty_prediction(rnd_models: dict)`: Inject pre-loaded RND models into policy
+  - `get_uncertainty_scores(return_spatial_maps: bool = True)`: Compute uncertainty from latest embeddings
 
 ### 4. **Vision Encoder Embedding Storage** ✅
 - **File**: `src/lerobot/policies/pi05/modeling_pi05.py`
@@ -113,8 +114,9 @@ Phase 3 successfully integrates RND-based uncertainty quantification into the Pi
 - **Function Modified**: `eval_main()`
 - **Changes**:
   - Check if `cfg.eval.save_uncertainty_maps` is enabled
-  - Call `load_rnd_models_for_policy()` before evaluation
-  - Handle loading failures gracefully
+  - Call `load_rnd_models_for_policy(policy, task, cameras, rnd_models_dir, device)` before evaluation
+  - **Critical**: Stops execution on loading failure (raises RuntimeError) instead of continuing
+  - RND models loaded from `best_model.ckpt` (with fallback to `model.ckpt`)
   - Pass `uncertainty_dir` through evaluation pipeline
 
 ### 9. **Test Scripts** ✅
@@ -169,9 +171,10 @@ Save to disk: episode_XXXXX_uncertainty.pt
 - **Format**: One `.pt` file per episode containing all rollout steps
 - **Size**: ~1-5 MB per episode (depends on num steps)
 
-### **3. Graceful Failure Handling**
-- **Why**: Don't crash evaluation if RND models fail to load
-- **Behavior**: Log warning and continue without uncertainty prediction
+### **3. Strict Failure Handling**
+- **Why**: Ensure users are aware when RND models fail to load
+- **Behavior**: Raise RuntimeError and stop execution (don't continue silently)
+- **Rationale**: Running with `--eval.save_uncertainty_maps=true` but no RND models would be misleading
 
 ### **4. Task Type Auto-Detection**
 - **Why**: Automatically select correct RND models based on environment
