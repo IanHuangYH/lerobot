@@ -224,6 +224,78 @@ def compute_uncertainty_scores(
     return uncertainties
 
 
+def load_rnd_models_for_policy(
+    policy,
+    task: str,
+    cameras: list[str] = ['agentview', 'wrist'],
+    rnd_models_dir: Optional[Path] = None,
+    device: str = "cpu",
+) -> None:
+    """
+    Load RND models and inject them into a policy for uncertainty prediction.
+    
+    This is the main entry point for enabling uncertainty quantification during evaluation.
+    
+    Args:
+        policy: Policy object (e.g., PI05Policy instance)
+        task: Task name or comma-separated list of tasks (e.g., 'libero_object' or 'libero_object_0')
+        cameras: List of camera names to load models for
+        rnd_models_dir: Directory containing trained RND models
+        device: Device to load models on
+    
+    Raises:
+        ValueError: If task type cannot be determined or models not found
+        AttributeError: If policy doesn't support uncertainty prediction
+    
+    Example:
+        >>> policy = PI05Policy(config)
+        >>> load_rnd_models_for_policy(policy, 'libero_object', device='cuda:0')
+        >>> # Now policy.get_uncertainty_scores() will work
+    """
+    # Check if policy supports uncertainty prediction
+    if not hasattr(policy, 'enable_uncertainty_prediction'):
+        raise AttributeError(
+            f"Policy type '{type(policy).__name__}' does not support uncertainty prediction. "
+            "Make sure you're using PI05Policy with the uncertainty extensions."
+        )
+    
+    # Extract task type from task name
+    # Handle comma-separated tasks (take the first one)
+    if ',' in task:
+        task = task.split(',')[0].strip()
+    
+    try:
+        task_type = extract_task_type_from_env_name(task)
+        logging.info(f"Detected task type: {task_type} from task name: {task}")
+    except ValueError as e:
+        raise ValueError(
+            f"Could not determine task type from task name '{task}'. "
+            f"Expected format like 'libero_object' or 'libero_spatial_0'. Error: {e}"
+        )
+    
+    # Load RND models for this task type
+    try:
+        rnd_models = load_rnd_models_for_task(
+            task_type=task_type,
+            cameras=cameras,
+            rnd_models_dir=rnd_models_dir,
+            device=device,
+        )
+    except FileNotFoundError as e:
+        raise FileNotFoundError(
+            f"Failed to load RND models for task type '{task_type}'. "
+            f"Make sure Phase 2 training has been completed. Error: {e}"
+        )
+    
+    # Inject RND models into policy
+    policy.enable_uncertainty_prediction(rnd_models)
+    
+    logging.info(
+        f"Successfully enabled uncertainty prediction on policy with {len(rnd_models)} RND models "
+        f"for task type '{task_type}'"
+    )
+
+
 def upsample_spatial_map(
     spatial_map: torch.Tensor,
     target_size: tuple = (224, 224),
