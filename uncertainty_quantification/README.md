@@ -744,21 +744,25 @@ tensorboard --logdir uncertainty_quantification/rnd_save_models/spatial_agentvie
 
 ---
 
-### **Phase 3: Inference Integration**
+### **Phase 3: Inference Integration** ✅
 
 **Goal**: Integrate RND uncertainty prediction into `lerobot_eval.py`
 
 **Steps**:
-1. Modify `modeling_pi05.py`:
+1. ✅ Modify `modeling_pi05.py`:
    - Add `enable_uncertainty_prediction()` method
    - Store latest embeddings during `embed_prefix()`
    - Add `get_uncertainty_scores()` method
-2. Modify `lerobot_eval.py`:
+2. ✅ Modify `lerobot_eval.py`:
    - Add `--eval.save_uncertainty_maps` flag
    - Load appropriate RND models based on task type
    - Call RND inference after each action prediction
    - Save uncertainty scores per rollout step
-3. Implement batched token processing for efficiency
+3. ✅ Create `uncertainty_quantification/inference/` module:
+   - `load_rnd_models_for_task()`: Load RND checkpoints
+   - `compute_uncertainty_scores()`: Compute uncertainty from embeddings
+   - `extract_episode_uncertainty()`: Extract per-episode data from batched rollout
+4. ✅ Implement batched token processing for efficiency
 
 **Uncertainty Computation**:
 ```python
@@ -784,10 +788,15 @@ def get_uncertainty_scores(self):
 **Output**:
 - `eval_logs/{eval_name}/uncertainty/{task}/episode_XXXXX_uncertainty.pt`
 
-**Files to Modify**:
+**Files Modified**:
 - `lerobot/src/lerobot/policies/pi05/modeling_pi05.py`
 - `lerobot/src/lerobot/scripts/lerobot_eval.py`
 - `lerobot/src/lerobot/configs/default.py` (add `save_uncertainty_maps` flag)
+
+**Files Created**:
+- `uncertainty_quantification/inference/__init__.py`
+- `uncertainty_quantification/inference/rnd_inference.py`
+- `uncertainty_quantification/test/test_uncertainty_inference.sh`
 
 ---
 

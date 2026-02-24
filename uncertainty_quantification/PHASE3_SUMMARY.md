@@ -24,7 +24,9 @@ Phase 3 successfully integrates RND-based uncertainty quantification into the Pi
   - `uncertainty_quantification/inference/rnd_inference.py`
 - **Key Functions**:
   - `extract_task_type_from_env(task_str)`: Maps LIBERO task names to RND task types
-  - `load_rnd_models_for_policy(policy, task, device)`: Loads appropriate RND checkpoints
+  - `load_rnd_models_for_task(task, device)`: Loads appropriate RND checkpoints
+  - `compute_uncertainty_scores(embeddings, rnd_models, device)`: Computes uncertainty from embeddings
+  - `extract_episode_uncertainty(all_uncertainty_scores, batch_idx)`: Extracts per-episode data from batched rollout
 - **Task Type Mapping**:
   - `libero_spatial` → `spatial`
   - `libero_object` → `object`
@@ -82,6 +84,10 @@ Phase 3 successfully integrates RND-based uncertainty quantification into the Pi
 ### 7. **Uncertainty Saving** ✅
 - **File**: `src/lerobot/scripts/lerobot_eval.py`
 - **Functions Modified**: `rollout()`, `eval_policy()`, `eval_one()`, `run_one()`, `eval_policy_all()`, `eval_main()`
+- **Batch Processing Architecture**: 
+  - During rollout: Collect batched uncertainty tensors (batch_size, ...)
+  - When saving: Use `extract_episode_uncertainty()` from inference module to extract per-episode data
+  - This keeps uncertainty-specific data structure knowledge in the uncertainty module, not in the evaluation script
 - **Saved Format**:
   ```python
   {
@@ -148,12 +154,18 @@ Action Selection (Pi0.5 Policy)
 get_uncertainty_scores() called
     ↓
 RND Forward Pass (batched):
-  - agentview: (256, 2048) → RND → (256,) uncertainties
-  - wrist: (256, 2048) → RND → (256,) uncertainties
+  - agentview: (batch, 256, 2048) → RND → (batch, 256) uncertainties
+  - wrist: (batch, 256, 2048) → RND → (batch, 256) uncertainties
     ↓
 Aggregate:
-  - Overall: mean(agentview_score, wrist_score)
-  - Spatial maps: reshape to (16, 16)
+  - Overall: mean(agentview_score, wrist_score) → (batch,)
+  - Spatial maps: reshape to (batch, 16, 16)
+    ↓
+Collect During Rollout:
+  - Append batched tensors to all_uncertainty_scores list
+    ↓
+Extract Per-Episode (using extract_episode_uncertainty()):
+  - Slice tensors at [batch_idx] to get individual episode data
     ↓
 Save to disk: episode_XXXXX_uncertainty.pt
 ```
@@ -191,6 +203,10 @@ Save to disk: episode_XXXXX_uncertainty.pt
 ### **Created Files**:
 1. `uncertainty_quantification/inference/__init__.py`
 2. `uncertainty_quantification/inference/rnd_inference.py`
+   - `load_rnd_models_for_task()`: Load RND checkpoints
+   - `extract_task_type_from_env_name()`: Parse task type from environment name
+   - `compute_uncertainty_scores()`: Compute uncertainty from embeddings
+   - `extract_episode_uncertainty()`: Extract per-episode data from batched rollout
 3. `uncertainty_quantification/test/test_uncertainty_inference.sh`
 4. `pi_setting/eval/eval_libero_with_uncertainty.sh`
 5. `uncertainty_quantification/PHASE3_SUMMARY.md` (this file)
