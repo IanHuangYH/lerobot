@@ -37,20 +37,22 @@ Phase 4 implements comprehensive visualization tools for uncertainty quantificat
 - `add_text_to_image()` - Add text overlays with background
 - `create_visualization_grid()` - Main 2x2 grid generator
 
-**Output Format** (2x2 Grid):
+**Output Format** (2x2 Grid + Colorbar):
 ```
-┌─────────────────────────┬─────────────────────────┐
-│   Agentview + Overlay   │   Wrist + Overlay       │
-│   Score: 0.1450         │   Score: 0.0890         │
-├─────────────────────────┼─────────────────────────┤
-│   Agentview Heatmap     │   Wrist Heatmap         │
-│   (Pure)                │   (Pure)                │
-└─────────────────────────┴─────────────────────────┘
+┌─────────────────────────┬─────────────────────────┬──────┐
+│   Agentview + Overlay   │   Wrist + Overlay       │      │
+│   Score: 0.1450         │   Score: 0.0890         │ C    │
+├─────────────────────────┼─────────────────────────┤ O    │
+│   Agentview Heatmap     │   Wrist Heatmap         │ L    │
+│   (Pure)                │   (Pure)                │ O    │
+│                         │                         │ R    │
+└─────────────────────────┴─────────────────────────┴──────┘
        Overall: 0.1170 | Timestep: 50
 ```
 
 **Features**:
 - ✅ Uncertainty scores displayed on top row
+- ✅ Colorbar on the right showing uncertainty scale (min to max)
 - ✅ Configurable colormap (default: "viridis")
 - ✅ Adjustable overlay transparency (default: 0.55)
 - ✅ Overall uncertainty + timestep at bottom
@@ -255,7 +257,7 @@ python -m uncertainty_quantification.visualization.verify_uncertainty_video_alig
 
 ## 🎨 Visualization Examples
 
-### **Example 1: 2x2 Grid Snapshot**
+### **Example 1: 2x2 Grid Snapshot with Colorbar**
 
 **Input**:
 - Timestep: 50
@@ -266,16 +268,24 @@ python -m uncertainty_quantification.visualization.verify_uncertainty_video_alig
 **Output**: `timestep_050_grid.png`
 
 ```
-┌─────────────────────────┬─────────────────────────┐
-│  [Video frame]          │  [Video frame]          │
-│  + Heatmap overlay      │  + Heatmap overlay      │
-│  Agentview: 0.1450      │  Wrist: 0.0890          │
-├─────────────────────────┼─────────────────────────┤
-│  [Pure heatmap]         │  [Pure heatmap]         │
-│  Agentview Heatmap      │  Wrist Heatmap          │
-└─────────────────────────┴─────────────────────────┘
+┌─────────────────────────┬─────────────────────────┬──────┐
+│  [Video frame]          │  [Video frame]          │      │
+│  + Heatmap overlay      │  + Heatmap overlay      │ 0.20 │
+│  Agentview: 0.1450      │  Wrist: 0.0890          │  ↑   │
+├─────────────────────────┼─────────────────────────┤ U    │
+│  [Pure heatmap]         │  [Pure heatmap]         │ n    │
+│  Agentview Heatmap      │  Wrist Heatmap          │ c    │
+│                         │                         │ e    │
+│                         │                         │ r    │
+│                         │                         │ t    │
+│                         │                         │  ↓   │
+│                         │                         │ 0.00 │
+└─────────────────────────┴─────────────────────────┴──────┘
        Overall: 0.1170 | Timestep: 50
 ```
+
+**Colorbar**: Shows the uncertainty range from minimum (bottom, typically dark blue) 
+to maximum (top, typically yellow/bright) across both cameras for that timestep.
 
 ### **Example 2: Overall Timeline**
 
@@ -301,26 +311,53 @@ python -m uncertainty_quantification.visualization.verify_uncertainty_video_alig
 
 ## 🔍 Key Design Decisions
 
-### **1. Colormap Choice: "viridis"**
+### **Differences from Attention Visualization**
+
+**Attention Maps** (VLA internal):
+- Probability distributions → **sum to 1** (normalized weights)
+- Smooth, continuous values (focus allocation)
+- Represent relative importance across tokens
+
+**Uncertainty Maps** (RND predictions):
+- Prediction errors (MSE) → **do NOT sum to 1** (independent scores)
+- Discrete per-patch measurements (16×16 grid)
+- Represent absolute novelty/OOD-ness per region
+
+**Key Implication**: Uncertainty can be uniformly high (all novel), uniformly low (all familiar), 
+or mixed. This allows cross-frame/episode comparison of absolute uncertainty levels.
+
+### **1. Nearest-Neighbor Upsampling** (Zone-by-Zone Display)
+- **Why**: Accurately represents discrete 16×16 patch measurements
+- **Implementation**: `scipy.ndimage.zoom(order=0)` preserves patch boundaries
+- **Result**: Each token region shows uniform color (honest about granularity)
+- **Alternative**: Bilinear (`order=1`) creates smooth gradients but falsely implies sub-patch precision
+
+### **2. Colormap Choice: "viridis"**
 - **Why**: Better accessibility (colorblind-friendly)
 - **Alternatives**: `plasma`, `inferno`, `coolwarm`, `hot`
 - **Configurable**: Users can override via `--colormap`
 
-### **2. Text Overlays on Top Row**
+### **3. Text Overlays on Top Row**
 - **Why**: Immediate visibility of uncertainty scores
 - **Implementation**: Black background with white text for readability
 - **Location**: Top of each quadrant + bottom for overall
 
-### **3. Separate Pure Heatmaps**
+### **4. Separate Pure Heatmaps**
 - **Why**: Enables inspection of spatial patterns without video distraction
 - **Use case**: Compare heatmaps across timesteps to see pattern evolution
 
-### **4. No Full Video Generation (Task 4 Skipped)**
+### **5. Colorbar for Quantitative Interpretation**
+- **Why**: Shows absolute uncertainty scale (unlike attention which sums to 1)
+- **Implementation**: Matplotlib colorbar with tick marks and labels
+- **Placement**: Right side of visualization with 10px white margin
+- **Scale**: Computed from min/max values across both cameras for consistency
+
+### **6. No Full Video Generation (Task 4 Skipped)**
 - **Reason**: Snapshots sufficient for debugging/analysis
 - **Benefit**: Faster processing, lower storage
 - **Future**: Can add if needed for presentations
 
-### **5. Modular Visualization Functions**
+### **7. Modular Visualization Functions**
 - **Why**: Reusable components for custom analyses
 - **Benefit**: Users can import functions for custom plots
 - **Example**: `from uncertainty_quantification.visualization import create_uncertainty_heatmap`
@@ -365,11 +402,14 @@ Save as PNG
 ### **Heatmap Processing Pipeline**
 
 1. **Input**: Spatial map (16, 16) - raw RND prediction errors
-2. **Upsampling**: Bilinear interpolation to (224, 224)
+2. **Upsampling**: Nearest-neighbor interpolation to (224, 224) - preserves discrete patch boundaries
 3. **Normalization**: Scale to [0, 1] based on max value
 4. **Colormap**: Apply matplotlib colormap → RGBA (224, 224, 4)
 5. **Alpha blending**: Combine with video frame
 6. **Output**: RGB image (224, 224, 3)
+
+**Design Note**: Nearest-neighbor upsampling ensures each 16×16 patch displays as a uniform zone, 
+accurately representing that we have discrete per-patch measurements (not continuous uncertainty fields).
 
 ### **Timeline Statistics**
 
@@ -542,7 +582,8 @@ import argparse
 ### **Key Features**
 
 - 🎨 **2x2 Grid Visualization**: Overlays + pure heatmaps with scores
-- 📈 **Timeline Plots**: Overall, camera comparison, multi-episode
+- � **Colorbar**: Quantitative scale showing uncertainty range (min to max)
+- �📈 **Timeline Plots**: Overall, camera comparison, multi-episode
 - 🔧 **Batch Processing**: Automate visualization for many episodes
 - 🎯 **Configurable**: Colormap, transparency, timesteps
 - 📊 **Statistics**: Mean, max, per-camera trends

@@ -22,6 +22,8 @@ import torch
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
+from matplotlib import cm
+from matplotlib.colors import Normalize
 from pathlib import Path
 from typing import Dict, List, Tuple
 from scipy.ndimage import zoom
@@ -148,7 +150,7 @@ def create_uncertainty_heatmap(
     # Upsample to target size
     grid_size = uncertainty_map.shape[0]
     zoom_factor = img_size / grid_size
-    upsampled = zoom(uncertainty_map, zoom_factor, order=1)  # Bilinear interpolation
+    upsampled = zoom(uncertainty_map, zoom_factor, order=0)  # Nearest-neighbor (preserves patch boundaries)
     
     # Normalize to [0, 1]
     if uncertainty_map.max() > 0:
@@ -261,6 +263,51 @@ def add_text_to_image(
     return img_copy
 
 
+def create_colorbar(height: int, width: int, vmin: float, vmax: float, colormap: str = "viridis") -> np.ndarray:
+    """
+    Create a colorbar image showing the uncertainty scale.
+    
+    Args:
+        height: Height of colorbar in pixels
+        width: Width of colorbar in pixels (typically 60-100)
+        vmin: Minimum uncertainty value
+        vmax: Maximum uncertainty value
+        colormap: Matplotlib colormap name
+    
+    Returns:
+        RGB image of colorbar [height, width, 3]
+    """
+    # Create figure with colorbar
+    fig, ax = plt.subplots(figsize=(width/100, height/100), dpi=100)
+    fig.subplots_adjust(left=0.0, right=0.4, top=1.0, bottom=0.0)
+    
+    # Create colorbar
+    cmap = plt.get_cmap(colormap)
+    norm = Normalize(vmin=vmin, vmax=vmax)
+    
+    # Create a ScalarMappable for the colorbar
+    sm = cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    
+    # Add colorbar to the axis
+    cbar = plt.colorbar(sm, cax=ax, orientation='vertical')
+    cbar.set_label('Uncertainty', rotation=270, labelpad=20, fontsize=10)
+    cbar.ax.tick_params(labelsize=8)
+    
+    # Convert to image
+    fig.canvas.draw()
+    # Use tobytes() instead of deprecated tostring_rgb()
+    colorbar_img = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+    colorbar_img = colorbar_img.reshape(fig.canvas.get_width_height()[::-1] + (4,))
+    colorbar_img = colorbar_img[:, :, :3]  # Convert RGBA to RGB
+    plt.close(fig)
+    
+    # Resize to exact dimensions
+    colorbar_img = cv2.resize(colorbar_img, (width, height), interpolation=cv2.INTER_LINEAR)
+    
+    return colorbar_img
+
+
 def create_visualization_grid(
     agentview_frame: np.ndarray,
     wrist_frame: np.ndarray,
@@ -274,17 +321,17 @@ def create_visualization_grid(
     alpha: float = 0.55,
 ) -> np.ndarray:
     """
-    Create 2x2 grid visualization with overlays and heatmaps.
+    Create 2x2 grid visualization with overlays, heatmaps, and colorbar.
     
     Layout:
-    ┌─────────────────────┬─────────────────────┐
-    │   Agentview         │   Wrist             │
-    │   + Overlay         │   + Overlay         │
-    │   Score: X.XXX      │   Score: Y.YYY      │
-    ├─────────────────────┼─────────────────────┤
-    │   Agentview         │   Wrist             │
-    │   Pure Heatmap      │   Pure Heatmap      │
-    └─────────────────────┴─────────────────────┘
+    ┌─────────────────────┬─────────────────────┬──────┐
+    │   Agentview         │   Wrist             │      │
+    │   + Overlay         │   + Overlay         │ C    │
+    │   Score: X.XXX      │   Score: Y.YYY      │ O    │
+    ├─────────────────────┼─────────────────────┤ L    │
+    │   Agentview         │   Wrist             │ O    │
+    │   Pure Heatmap      │   Pure Heatmap      │ R    │
+    └─────────────────────┴─────────────────────┴──────┘
            Overall: Z.ZZZ | Timestep: T
     
     Args:
@@ -300,9 +347,13 @@ def create_visualization_grid(
         alpha: Overlay transparency
     
     Returns:
-        Grid image [2*H + margin, 2*W + margin, 3]
+        Grid image with colorbar [2*H + margin, 2*W + colorbar_width + margin, 3]
     """
     H, W, _ = agentview_frame.shape
+    
+    # Calculate uncertainty range for colorbar (across both cameras)
+    vmin = min(agentview_map.min(), wrist_map.min())
+    vmax = max(agentview_map.max(), wrist_map.max())
     
     # Create heatmaps
     ag_heatmap = create_uncertainty_heatmap(agentview_map, H, colormap)
@@ -329,11 +380,23 @@ def create_visualization_grid(
     bottom_row = np.hstack([ag_heatmap_rgb, wrist_heatmap_rgb])
     grid = np.vstack([top_row, bottom_row])
     
+    # Create and add colorbar on the right
+    colorbar_width = 80
+    grid_height = grid.shape[0]
+    colorbar = create_colorbar(grid_height, colorbar_width, vmin, vmax, colormap)
+    
+    # Add white margin between grid and colorbar
+    margin_width = 10
+    margin = np.ones((grid_height, margin_width, 3), dtype=np.uint8) * 255
+    
+    # Combine grid, margin, and colorbar
+    grid_with_colorbar = np.hstack([grid, margin, colorbar])
+    
     # Add overall info at bottom
     info_text = f"Overall: {overall_score:.4f} | Timestep: {timestep}"
-    grid = add_text_to_image(grid, info_text, "bottom", font_scale=0.8, thickness=2)
+    grid_with_colorbar = add_text_to_image(grid_with_colorbar, info_text, "bottom", font_scale=0.8, thickness=2)
     
-    return grid
+    return grid_with_colorbar
 
 
 def main():
