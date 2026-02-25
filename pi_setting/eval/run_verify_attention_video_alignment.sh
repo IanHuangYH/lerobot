@@ -55,7 +55,7 @@
 # This creates side-by-side visualizations for multiple timesteps
 
 # Default paths (modify as needed)
-EVAL_FOLDER="scene_variants_eval"
+EVAL_FOLDER="quick_test"
 EVAL_SCENE_INDEX=9  # Which evaluation run to use (0-9, default: 0 = first run)
 EVAL_TASK_AMOUNT=10  # How many tasks to verify (default: 10, set to 1 for quick test)
 
