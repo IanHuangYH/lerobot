@@ -6,11 +6,11 @@
 ALL_GPU=0,1
 POLICY_GPU_ID=0  # Which physical GPU to use (0 or 1)
 
-OUTPUTS_DIR=./eval_logs/with_uncertainty
+OUTPUT_DIR="uncertainty_quantification/eval_log/rnd_object_all"
 TASK_SUITE=libero_object  # libero_spatial,libero_object,libero_goal,libero_10
 
-EPISODE=10  # run amount for each task (for success rate)
-TASK_IDS='[0]'  # different scenes for one group
+EPISODE=3  # run amount for each task (for success rate)
+TASK_IDS='[0,1,2,3,4,5,6,7,8,9]'  # different scenes for one group
 
 # Set batch_size to min(EPISODE, 10) to avoid validation errors
 BATCH_SIZE=$(( EPISODE < 10 ? EPISODE : 10 ))
@@ -20,7 +20,7 @@ echo "LIBERO Evaluation with Uncertainty Prediction"
 echo "================================================"
 echo "Task Suite: $TASK_SUITE"
 echo "Episodes: $EPISODE"
-echo "Output Dir: $OUTPUTS_DIR"
+echo "Output Dir: $OUTPUT_DIR"
 echo "================================================"
 echo ""
 
@@ -33,10 +33,11 @@ CUDA_VISIBLE_DEVICES=$ALL_GPU lerobot-eval \
     --policy.path=lerobot/pi05_libero_finetuned \
     --policy.n_action_steps=10 \
     --policy.device=cuda:$POLICY_GPU_ID \
-    --output_dir=$OUTPUTS_DIR \
+    --output_dir=$OUTPUT_DIR \
     --env.max_parallel_tasks=1 \
     --env.task_ids=$TASK_IDS \
     --env.init_states=true \
+    --policy.compile_model=false \
     --eval.save_attention_maps=true \
     --eval.save_uncertainty_maps=true
 
@@ -45,7 +46,7 @@ echo "================================================"
 echo "Evaluation completed!"
 echo "================================================"
 echo "Results:"
-echo "  Videos: $OUTPUTS_DIR/videos/"
-echo "  Attention: $OUTPUTS_DIR/attention/"
-echo "  Uncertainty: $OUTPUTS_DIR/uncertainty/"
+echo "  Videos: $OUTPUT_DIR/videos/"
+echo "  Attention: $OUTPUT_DIR/attention/"
+echo "  Uncertainty: $OUTPUT_DIR/uncertainty/"
 echo "================================================"

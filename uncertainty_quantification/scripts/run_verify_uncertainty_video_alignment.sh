@@ -49,10 +49,13 @@
 #
 # =============================================================================
 
+BASE_EVAL_DIR="uncertainty_quantification/eval_log"
+
 # Default paths (modify as needed)
-EVAL_FOLDER="with_uncertainty"
+EVAL_FOLDER="test_rnd_inference"
 EVAL_SCENE_INDEX=0  # Which task IDs to process (0-9, default: 0 = first task)
-EVAL_TASK_AMOUNT=9  # How many episodes to verify per task (default: 9, set to 1 for quick test)
+EVAL_TASK_AMOUNT=1  # How many episodes to verify per task (default: 9, set to 1 for quick test)
+TASK="object"  # Task type (e.g., "object", "spatial", "goal")
 
 echo "============================================================"
 echo "Uncertainty Visualization - Batch Verification"
@@ -64,25 +67,25 @@ echo "============================================================"
 echo ""
 
 for i in $(seq 0 $EVAL_SCENE_INDEX); do
-    TASK_FOLDER="libero_object_$i"
+    TASK_FOLDER="libero_${TASK}_$i"
     
     echo "------------------------------------------------------------"
     echo "Processing task: $TASK_FOLDER"
     echo "------------------------------------------------------------"
     
     for j in $(seq 0 $EVAL_TASK_AMOUNT); do
-        UNCERTAINTY_FILE="eval_logs/$EVAL_FOLDER/uncertainty/$TASK_FOLDER/episode_$(printf "%05d" $j)_uncertainty.pt"
-        VIDEO_FILE="eval_logs/$EVAL_FOLDER/videos/$TASK_FOLDER/eval_episode_$(printf "%05d" $j).mp4"
-        OUTPUT_DIR="eval_logs/$EVAL_FOLDER/uncertainty/$TASK_FOLDER/verification"
+        UNCERTAINTY_FILE="$BASE_EVAL_DIR/$EVAL_FOLDER/uncertainty/$TASK_FOLDER/episode_$(printf "%05d" $j)_uncertainty.pt"
+        VIDEO_FILE="$BASE_EVAL_DIR/$EVAL_FOLDER/videos/$TASK_FOLDER/eval_episode_$(printf "%05d" $j).mp4"
+        OUTPUT_DIR="$BASE_EVAL_DIR/$EVAL_FOLDER/uncertainty/$TASK_FOLDER/verification"
 
         # Check if files exist
         if [ ! -f "$UNCERTAINTY_FILE" ]; then
-            echo "  ⚠ Skipping episode $j: uncertainty file not found"
+            echo "  ⚠ Skipping episode $j: uncertainty file: $UNCERTAINTY_FILE not found"
             continue
         fi
         
         if [ ! -f "$VIDEO_FILE" ]; then
-            echo "  ⚠ Skipping episode $j: video file not found"
+            echo "  ⚠ Skipping episode $j: video file: $VIDEO_FILE not found"
             continue
         fi
 
@@ -111,6 +114,6 @@ done
 echo "============================================================"
 echo "✓ Batch verification complete!"
 echo "============================================================"
-echo "Outputs saved to: eval_logs/$EVAL_FOLDER/uncertainty/*/verification/"
+echo "Outputs saved to: $BASE_EVAL_DIR/$EVAL_FOLDER/uncertainty/*/verification/"
 echo "  - timestep_XXX_grid.png (2x2 visualization)"
 echo "============================================================"
