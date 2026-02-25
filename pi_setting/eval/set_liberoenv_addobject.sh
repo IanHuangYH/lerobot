@@ -56,7 +56,7 @@
 #
 # =============================================================================
 
-GROUP=libero_object
+GROUP=libero_unseen_object
 TASK=pick_up_the_alphabet_soup_and_place_it_in_the_basket
 
 # EXAMPLES OF OTHER TASKS:
@@ -64,11 +64,33 @@ TASK=pick_up_the_alphabet_soup_and_place_it_in_the_basket
 # spatial_1, GROUP=libero_spatial, TASK=pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate
 # object_0, GROUP=libero_object, TASK=pick_up_the_alphabet_soup_and_place_it_in_the_basket
 
+# Define file paths
+INIT_FILE="/workspace/lerobot/third_party/LIBERO/libero/libero/init_files/$GROUP/$TASK.init"
+BDDL_FILE="/workspace/lerobot/third_party/LIBERO/libero/libero/bddl_files/$GROUP/$TASK.bddl"
+BDDL_OLD_FILE="/workspace/lerobot/third_party/LIBERO/libero/libero/bddl_files/$GROUP/$TASK.bddl.old"
+
+# Auto-create backup BDDL file if it doesn't exist
+if [ ! -f "$BDDL_OLD_FILE" ]; then
+    echo "ℹ️  Backup BDDL file not found, creating from original..."
+    if [ -f "$BDDL_FILE" ]; then
+        cp "$BDDL_FILE" "$BDDL_OLD_FILE"
+        echo "✅ Created: $BDDL_OLD_FILE"
+    else
+        echo "❌ Error: Original BDDL file not found: $BDDL_FILE"
+        exit 1
+    fi
+fi
+
+# Check that init file exists
+if [ ! -f "$INIT_FILE" ]; then
+    echo "❌ Error: Original init file not found: $INIT_FILE"
+    exit 1
+fi
 
 cd /workspace/lerobot/pi_setting/eval && python preserve_exact_positions.py \
     --old_bddl /workspace/lerobot/third_party/LIBERO/libero/libero/bddl_files/$GROUP/$TASK.bddl.old \
     --new_bddl /workspace/lerobot/third_party/LIBERO/libero/libero/bddl_files/$GROUP/$TASK.bddl \
-    --old_init /workspace/lerobot/third_party/LIBERO/libero/libero/init_files/$GROUP/$TASK.bak \
+    --old_init /workspace/lerobot/third_party/LIBERO/libero/libero/init_files/$GROUP/$TASK.init \
     --output_init /workspace/lerobot/third_party/LIBERO/libero/libero/init_files/$GROUP/$TASK.pruned_init
 
     

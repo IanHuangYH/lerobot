@@ -128,7 +128,7 @@ Phase 3 successfully integrates RND-based uncertainty quantification into the Pi
 ### 9. **Test Scripts** ✅
 - **Files Created**:
   - `uncertainty_quantification/test/test_uncertainty_inference.sh`
-  - `pi_setting/eval/eval_libero_with_uncertainty.sh`
+  - `uncertainty_quantification/script/eval_libero_with_uncertainty.sh`
 - **Purpose**:
   - Quick test on 2 episodes to verify integration
   - Full evaluation script with uncertainty enabled
@@ -208,7 +208,7 @@ Save to disk: episode_XXXXX_uncertainty.pt
    - `compute_uncertainty_scores()`: Compute uncertainty from embeddings
    - `extract_episode_uncertainty()`: Extract per-episode data from batched rollout
 3. `uncertainty_quantification/test/test_uncertainty_inference.sh`
-4. `pi_setting/eval/eval_libero_with_uncertainty.sh`
+4. `uncertainty_quantification/script/eval_libero_with_uncertainty.sh`
 5. `uncertainty_quantification/PHASE3_SUMMARY.md` (this file)
 
 ### **Modified Files**:
@@ -240,7 +240,7 @@ cd /workspace/lerobot
 ### **Run Full Evaluation**:
 ```bash
 cd /workspace/lerobot
-./pi_setting/eval/eval_libero_with_uncertainty.sh
+./uncertainty_quantification/script/eval_libero_with_uncertainty.sh
 ```
 
 ### **Load Uncertainty Data**:
