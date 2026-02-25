@@ -131,6 +131,7 @@ def run_evaluation_for_variant(
             f"--env.task_ids={eval_config['task_ids']}",
             f"--env.init_states={eval_config['use_init_states']}",
             f"--eval.save_attention_maps={eval_config['save_attention_maps']}",
+            f"--eval.save_uncertainty_maps={eval_config['save_uncertainty_maps']}",
         ]
         
         # Set CUDA_VISIBLE_DEVICES
@@ -360,6 +361,7 @@ def main():
     parser.add_argument("--compile_model", type=str, default="false", help="Compile model")
     parser.add_argument("--use_init_states", type=str, default="true", help="Use init states")
     parser.add_argument("--save_attention_maps", type=str, default="true", help="Save attention maps")
+    parser.add_argument("--save_uncertainty_maps", type=str, default="false", help="Save uncertainty maps")
     parser.add_argument("--output_dir", type=str, required=True, help="Base output directory (all tasks)")
     parser.add_argument("--bddl_dir", type=str, required=True, help="Directory containing BDDL files")
     parser.add_argument("--init_dir", type=str, required=True, help="Directory containing init files")
@@ -427,6 +429,7 @@ def main():
         'compile_model': args.compile_model,
         'use_init_states': args.use_init_states,
         'save_attention_maps': args.save_attention_maps,
+        'save_uncertainty_maps': args.save_uncertainty_maps,
     }
     
     # Run evaluation for each variant
