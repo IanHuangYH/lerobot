@@ -359,30 +359,60 @@ def create_visualization_grid(
     ag_heatmap = create_uncertainty_heatmap(agentview_map, H, colormap)
     wrist_heatmap = create_uncertainty_heatmap(wrist_map, H, colormap)
     
-    # Create overlays
+    # Create overlays (without text - keep images clean for alignment)
     ag_overlay = overlay_heatmap_on_image(agentview_frame, ag_heatmap, alpha)
     wrist_overlay = overlay_heatmap_on_image(wrist_frame, wrist_heatmap, alpha)
-    
-    # Add text to top row (overlays)
-    ag_overlay = add_text_to_image(ag_overlay, f"Agentview: {agentview_score:.4f}", "top")
-    wrist_overlay = add_text_to_image(wrist_overlay, f"Wrist: {wrist_score:.4f}", "top")
     
     # Convert pure heatmaps to RGB (remove alpha channel)
     ag_heatmap_rgb = ag_heatmap[:, :, :3]
     wrist_heatmap_rgb = wrist_heatmap[:, :, :3]
     
-    # Add labels to bottom row (pure heatmaps)
-    ag_heatmap_rgb = add_text_to_image(ag_heatmap_rgb, "Agentview Heatmap", "top")
-    wrist_heatmap_rgb = add_text_to_image(wrist_heatmap_rgb, "Wrist Heatmap", "top")
-    
-    # Create grid
+    # Create grid without any text overlays (perfect alignment)
     top_row = np.hstack([ag_overlay, wrist_overlay])
     bottom_row = np.hstack([ag_heatmap_rgb, wrist_heatmap_rgb])
-    grid = np.vstack([top_row, bottom_row])
+    
+    # Add label margin at the top for row titles
+    label_height = 30
+    label_width = 2 * W  # Full width of concatenated images
+    
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.6
+    thickness = 2
+    text_color = (0, 0, 0)  # Black text
+    
+    # Top label: camera names and scores
+    top_label = np.ones((label_height, label_width, 3), dtype=np.uint8) * 240  # Light gray
+    
+    # Agentview label (left half)
+    ag_text = f"Agentview ({agentview_score:.4f})"
+    (text_width, text_height), _ = cv2.getTextSize(ag_text, font, font_scale, thickness)
+    text_x = (W - text_width) // 2
+    text_y = (label_height + text_height) // 2
+    cv2.putText(top_label, ag_text, (text_x, text_y), font, font_scale, text_color, thickness, cv2.LINE_AA)
+    
+    # Wrist label (right half)
+    wrist_text = f"Wrist ({wrist_score:.4f})"
+    (text_width, text_height), _ = cv2.getTextSize(wrist_text, font, font_scale, thickness)
+    text_x = W + (W - text_width) // 2
+    text_y = (label_height + text_height) // 2
+    cv2.putText(top_label, wrist_text, (text_x, text_y), font, font_scale, text_color, thickness, cv2.LINE_AA)
+    
+    # Middle label: overall uncertainty and timestep (same height as top label)
+    middle_label = np.ones((label_height, label_width, 3), dtype=np.uint8) * 240  # Light gray
+    
+    # Overall info centered across full width
+    overall_text = f"Overall: {overall_score:.4f} | Timestep: {timestep}"
+    (text_width, text_height), _ = cv2.getTextSize(overall_text, font, font_scale, thickness)
+    text_x = (label_width - text_width) // 2
+    text_y = (label_height + text_height) // 2
+    cv2.putText(middle_label, overall_text, (text_x, text_y), font, font_scale, text_color, thickness, cv2.LINE_AA)
+    
+    # Stack: top label + top row + middle label + bottom row
+    grid_with_labels = np.vstack([top_label, top_row, middle_label, bottom_row])
     
     # Create and add colorbar on the right
     colorbar_width = 80
-    grid_height = grid.shape[0]
+    grid_height = grid_with_labels.shape[0]
     colorbar = create_colorbar(grid_height, colorbar_width, vmin, vmax, colormap)
     
     # Add white margin between grid and colorbar
@@ -390,11 +420,7 @@ def create_visualization_grid(
     margin = np.ones((grid_height, margin_width, 3), dtype=np.uint8) * 255
     
     # Combine grid, margin, and colorbar
-    grid_with_colorbar = np.hstack([grid, margin, colorbar])
-    
-    # Add overall info at bottom
-    info_text = f"Overall: {overall_score:.4f} | Timestep: {timestep}"
-    grid_with_colorbar = add_text_to_image(grid_with_colorbar, info_text, "bottom", font_scale=0.8, thickness=2)
+    grid_with_colorbar = np.hstack([grid_with_labels, margin, colorbar])
     
     return grid_with_colorbar
 
