@@ -180,6 +180,23 @@ def run_evaluation_for_variant(
         else:
             print(f"   Attention dir not found: {temp_attention_dir}")
         
+        # Copy uncertainty files
+        temp_uncertainty_dir = temp_output_dir / "uncertainty" / task_key
+        final_uncertainty_dir = variants_dir / "uncertainty" / task_key
+        
+        if temp_uncertainty_dir.exists():
+            final_uncertainty_dir.mkdir(parents=True, exist_ok=True)
+            uncertainty_files = list(temp_uncertainty_dir.glob("episode_*.pt"))
+            print(f"   Found {len(uncertainty_files)} uncertainty files")
+            for file in uncertainty_files:
+                # Extract episode number from original filename
+                old_episode_num = file.stem.split('_')[1]
+                new_name = file.name.replace(f"episode_{old_episode_num}", f"episode_{episode_number:05d}")
+                shutil.copy2(file, final_uncertainty_dir / new_name)
+                print(f"   Copied uncertainty: {new_name}")
+        else:
+            print(f"   Uncertainty dir not found: {temp_uncertainty_dir}")
+        
         # Copy video files
         temp_videos_dir = temp_output_dir / "videos" / task_key
         final_videos_dir = variants_dir / "videos" / task_key

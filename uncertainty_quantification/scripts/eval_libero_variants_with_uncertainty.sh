@@ -23,10 +23,10 @@ INIT_DIR="$LIBERO_BASE/init_files/$TASK_SUITE"
 # Policy settings
 POLICY_PATH="lerobot/pi05_libero_finetuned"
 N_ACTION_STEPS=10
-COMPILE_MODEL=false
-USE_INIT_STATES=true
-SAVE_ATTENTION_MAPS=true
-SAVE_UNCERTAINTY_MAPS=true
+COMPILE_MODEL="false"
+USE_INIT_STATES="true"
+SAVE_ATTENTION_MAPS="true"
+SAVE_UNCERTAINTY_MAPS="true"
 
 echo "================================================================================"
 echo "LIBERO Scene Variants Evaluation with Uncertainty Prediction"

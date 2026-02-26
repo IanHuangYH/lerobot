@@ -36,7 +36,7 @@
 # CONFIGURATION:
 #   - EVAL_FOLDER: Which evaluation run to verify (e.g., "with_uncertainty")
 #   - EVAL_SCENE_INDEX: Max task ID to process (0-9)
-#   - EVAL_TASK_AMOUNT: Max episode to process per task
+#   - EVAL_EPISODE_AMOUNT: Max episode to process per task
 #   - TIMESTEPS: Which rollout steps to visualize (e.g., "0 10 20 30")
 #   - COLORMAP: Heatmap color scheme (default: "viridis")
 #   - ALPHA: Overlay transparency (default: 0.55)
@@ -50,19 +50,18 @@
 # =============================================================================
 
 BASE_EVAL_DIR="uncertainty_quantification/eval_log"
+EVAL_FOLDER="rnd_variant_object"
+EVAL_SCENE_INDEX=9  # Which task IDs to process (0-9, default: 0 = first task)
+EVAL_EPISODE_AMOUNT=7  # How many episodes to verify per task (default: 9, set to 1 for quick test)
+TASK="unseen_object"  # Task type (e.g., "object", "spatial", "goal")
 
-# Default paths (modify as needed)
-EVAL_FOLDER="test_rnd_inference"
-EVAL_SCENE_INDEX=0  # Which task IDs to process (0-9, default: 0 = first task)
-EVAL_TASK_AMOUNT=1  # How many episodes to verify per task (default: 9, set to 1 for quick test)
-TASK="object"  # Task type (e.g., "object", "spatial", "goal")
 
 echo "============================================================"
 echo "Uncertainty Visualization - Batch Verification"
 echo "============================================================"
 echo "Evaluation folder: $EVAL_FOLDER"
 echo "Task range: 0 to $EVAL_SCENE_INDEX"
-echo "Episodes per task: 0 to $EVAL_TASK_AMOUNT"
+echo "Episodes per task: 0 to $EVAL_EPISODE_AMOUNT"
 echo "============================================================"
 echo ""
 
@@ -73,7 +72,7 @@ for i in $(seq 0 $EVAL_SCENE_INDEX); do
     echo "Processing task: $TASK_FOLDER"
     echo "------------------------------------------------------------"
     
-    for j in $(seq 0 $EVAL_TASK_AMOUNT); do
+    for j in $(seq 0 $EVAL_EPISODE_AMOUNT); do
         UNCERTAINTY_FILE="$BASE_EVAL_DIR/$EVAL_FOLDER/uncertainty/$TASK_FOLDER/episode_$(printf "%05d" $j)_uncertainty.pt"
         VIDEO_FILE="$BASE_EVAL_DIR/$EVAL_FOLDER/videos/$TASK_FOLDER/eval_episode_$(printf "%05d" $j).mp4"
         OUTPUT_DIR="$BASE_EVAL_DIR/$EVAL_FOLDER/uncertainty/$TASK_FOLDER/verification"
