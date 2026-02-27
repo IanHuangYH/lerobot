@@ -427,3 +427,601 @@ RAW CAMERA (original)
 | **Transformation needed** | ❌ No | ✅ Yes (undo flip) |
 
 **Key takeaway**: Attention maps are in MODEL SPACE. The visualization scripts automatically apply the correct transformations to align with VIDEO SPACE for each camera.
+
+---
+
+## VLM Attention Saving (Task → Image Attention)
+
+In addition to action attention (which shows how action predictions attend to images), Pi0.5 also supports saving **VLM prefix attention** to analyze how the model's task instruction tokens attend to visual features.
+
+### What is VLM Attention?
+
+**VLM (Vision-Language Model) attention** captures the self-attention within the prefix encoding phase:
+- **Captured when**: During prefix encoding (before action generation starts)
+- **Captured once per**: Each action prediction (1 capture vs 10 for action attention)
+- **Contains**: Image↔Image, Image↔Language, Language↔Language, Language↔Image attention
+- **Use case**: Understand how task instructions guide visual grounding
+
+**Key differences from action attention:**
+
+| Aspect | Action Attention | VLM Attention |
+|--------|-----------------|---------------|
+| **When captured** | During denoising (10 steps per action) | During prefix encoding (once per action) |
+| **What it shows** | Action tokens → Images | Task tokens ↔ Images |
+| **Frequency** | 10× per action | 1× per action |
+| **File size** | ~2.8 GB/episode | ~280 MB/episode |
+| **Sequence length** | [50 actions, 1018 prefix] | [968 prefix, 968 prefix] |
+| **Purpose** | "How does action attend to visual context?" | "How does task command attend to objects?" |
+
+### Understanding VLM Self-Attention
+
+#### Basic Concept
+
+In the VLM (Vision-Language Model), all tokens (images + text) are in a **single unified sequence**:
+
+```
+Sequence: [img_patch_0, img_patch_1, ..., img_patch_767, text_token_0, text_token_1, ..., text_token_N]
+          └─────────────── 768 image patches ──────────────┘ └──────── language tokens ────────┘
+```
+
+Self-attention computes: `attention[i, j]` = **"how much token i (query) attends to token j (key/value)"**
+
+#### What We Visualize
+
+When we extract `attention[text_token_idx, image_patch_idx]`, we answer:
+
+> **"When the model processes this text token (word), which image regions does it look at?"**
+
+This is the **text-to-image attention pattern**, showing visual grounding of language.
+
+#### Attention Matrix Structure
+
+```python
+attention_weights.shape = [batch, heads, sequence_len, sequence_len]
+                        = [1, 8, 968, 968]
+
+# Where sequence = [768 image patches | 200 language tokens]
+# For LIBERO task "pick up the alphabet soup and place it in the basket":
+#   - Tokens [0:768]: image patches from 3 cameras (256 each)
+#   - Tokens [768:782]: task tokens ("Task:", "pick", "up", "the", "alphabet", "soup", ...)
+#   - Tokens [782:~907]: state tokens (robot joint positions, gripper state)
+#   - Tokens [~907:968]: action prefix tokens
+```
+
+#### Extracting Text→Image Attention
+
+```python
+# Shape: [heads, text_tokens, image_patches]
+task_to_img = attention[:, task_start:task_end, img_start:img_end]
+             = attention[:, 768:782, 0:768]
+
+# For specific token (e.g., token 774 = "soup"):
+specific_token_to_img = attention[:, 774, 0:768]  # [heads, 768]
+```
+
+#### Index Selection for Specific Tokens
+
+**Question**: "What index should I use for specific tokens?"
+
+**Answer**: Use the **absolute token index** in the full sequence.
+
+From the tokenization output:
+```
+Token 768: 'Task'       → Use index 768 to see what 'Task' attends to
+Token 773: ' alphabet'  → Use index 773 to see what 'alphabet' attends to  
+Token 774: ' soup'      → Use index 774 to see what 'soup' attends to
+Token 780: ' basket'    → Use index 780 to see what 'basket' attends to
+```
+
+#### Common Questions About VLM Attention
+
+**Q1: Why does "Task" token have highest attention?**
+
+**A**: The token "Task:" appears at position 768, right after image patches. Due to positional proximity and attention patterns, it often has strong attention. This is expected and doesn't indicate incorrect behavior.
+
+**Q2: Should I use Q from text and KV from images?**
+
+**A**: No need to think about Q/K/V separately. Self-attention already computes this:
+- Text tokens are queries (Q)
+- Image patches are keys (K) and values (V)
+- `attention[text_idx, img_idx]` gives you the result
+
+**Q3: How to interpret low attention values?**
+
+**A**: Attention values are **relative within each query token**. Focus on:
+1. **Spatial patterns**: Where attention concentrates (not absolute values)
+2. **Comparisons**: Does "soup" attend to soup can more than other regions?
+3. **Rankings**: Which tokens have highest image attention (see demo script)
+
+**Q4: Why [768, 782) instead of [0, 14)?**
+
+**A**: Token indices are **absolute positions** in the full sequence. The task starts at position 768 (after 768 image patches) and spans 14 tokens, so [768, 782)
+
+### How to Enable VLM Attention Saving
+
+Add `--eval.save_vlm_attention_maps=true` to your evaluation command:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 lerobot-eval \
+  --env.type=libero \
+  --env.task=libero_object \
+  --eval.batch_size=1 \
+  --eval.n_episodes=10 \
+  --eval.save_vlm_attention_maps=true \  # Enable VLM attention saving
+  --policy.compile_model=false \          # REQUIRED! (same as action attention)
+  --policy.path=lerobot/pi05_libero_finetuned \
+  --policy.device=cuda:0 \
+  --output_dir=./eval_logs/my_eval
+```
+
+**Quick test script:**
+
+Edit `pi_setting/eval/eval_libero_quick_test.sh` and uncomment the VLM attention flag:
+
+```bash
+# Change this line:
+# --eval.save_vlm_attention_maps=false \
+
+# To:
+--eval.save_vlm_attention_maps=true \
+```
+
+Then run:
+```bash
+bash pi_setting/eval/eval_libero_quick_test.sh
+```
+
+### VLM Attention Data Structure
+
+VLM attention files are saved as `episode_XXXXX_vlm_attention.pt` with this structure:
+
+```python
+{
+    'episode_index': 0,
+    'batch_index': 0,
+    'rollout_steps': [  # One per action in episode (~145 total)
+        {
+            'rollout_step': 0,
+            'vlm_attention': {
+                'prefix_len': 968,  # 768 image + 200 language tokens
+                'attention_weights': {
+                    0: tensor([1, 8, 968, 968]),   # Layer 0: [batch, heads, seq, seq]
+                    1: tensor([1, 8, 968, 968]),   # Layer 1
+                    ...
+                    17: tensor([1, 8, 968, 968]),  # Layer 17 (last layer)
+                }
+            }
+        },
+        ...
+    ],
+    'metadata': {
+        'num_rollout_steps': 145
+    }
+}
+```
+
+**Attention dimensions:**
+- **Shape**: `[1, 8, 968, 968]`
+- **Batch**: 1 (single environment)
+- **Heads**: 8 attention heads
+- **Sequence**: 968 = 768 (images) + 200 (language)
+  - **Image tokens**: indices 0-767 (256 patches × 3 cameras)
+  - **Language tokens**: indices 768-967 (task + state + action prefix)
+
+### Token Boundaries
+
+To analyze specific attention patterns, you need to know which tokens correspond to which content:
+
+```python
+from pi_setting.eval.token_boundary_helper import TokenBoundaryHelper
+
+# Example task text
+task_text = "pick up the alphabet soup and place it in the basket"
+full_text = f"Task: {task_text}, State: <state_tokens>;\nAction: "
+
+# Find boundaries
+helper = TokenBoundaryHelper()
+boundaries = helper.find_token_boundaries(full_text, num_img_tokens=768)
+
+# Output:
+# {
+#     'images': (0, 768),      # 256 patches × 3 cameras
+#     'task': (768, X),        # Task instruction (natural language)
+#     'state': (X, Y),         # Robot state (discretized)
+#     'action_prefix': (Y, 968) # "\nAction: "
+# }
+```
+
+**Create masks for analysis:**
+
+```python
+masks = helper.create_token_masks(boundaries)
+
+# Extract task→image attention
+task_start, task_end = boundaries['task']
+img_start, img_end = boundaries['images']
+
+# attention shape: [1, 8, 968, 968]
+task_to_img_attention = attention[0, :, task_start:task_end, img_start:img_end]
+# Result: [8 heads, N task tokens, 768 image patches]
+```
+
+### Visualizing VLM Attention
+
+Use `visualize_vlm_attention.py` to create heatmap overlays showing task→image attention.
+
+#### Usage Examples
+
+**Example 1: Aggregate All Task Tokens (Default)**
+
+Shows overall task→image attention (averaged across all words):
+
+```bash
+python pi_setting/eval/visualize_vlm_attention.py \
+    --attention_file eval_logs/.../episode_00000_vlm_attention.pt \
+    --video_file eval_logs/.../eval_episode_00000.mp4 \
+    --output_dir viz_output \
+    --task_name libero_object --task_id 0 \
+    --rollout_steps 10 20 30
+```
+
+**Output**: `timestep_010_agentview.png`, `timestep_010_wrist.png`
+
+**Interpretation**: "On average, which image regions do all task words look at?"
+
+**Example 2: Specific Token Attention**
+
+Shows attention from a single word:
+
+```bash
+python pi_setting/eval/visualize_vlm_attention.py \
+    --attention_file eval_logs/.../episode_00000_vlm_attention.pt \
+    --video_file eval_logs/.../eval_episode_00000.mp4 \
+    --output_dir viz_output \
+    --task_name libero_object --task_id 0 \
+    --rollout_steps 10 \
+    --specific_token_idx 774  # "soup" token
+```
+
+**Output**: `timestep_010_agentview_token774.png`, `timestep_010_wrist_token774.png`
+
+**Interpretation**: "When the model reads 'soup', which image regions does it look at?"
+
+**Example 3: Compare Multiple Tokens**
+
+To understand object grounding, visualize multiple object-related tokens:
+
+```bash
+# Token 773: "alphabet"
+python ... --specific_token_idx 773 --output_dir viz_alphabet
+
+# Token 774: "soup"  
+python ... --specific_token_idx 774 --output_dir viz_soup
+
+# Token 780: "basket"
+python ... --specific_token_idx 780 --output_dir viz_basket
+```
+
+**Expected Behavior**:
+- Token 773 ("alphabet") should attend to alphabet soup can
+- Token 774 ("soup") should attend to alphabet soup can  
+- Token 780 ("basket") should attend to basket/container
+
+#### Full Command Line Options
+
+```bash
+python pi_setting/eval/visualize_vlm_attention.py \
+    --attention_file eval_logs/quick_test/vlm_attention/libero_object_0/episode_00000_vlm_attention.pt \
+    --video_file eval_logs/quick_test/videos/libero_object_0/eval_episode_00000.mp4 \
+    --output_dir eval_logs/quick_test/vlm_attention/libero_object_0/viz_episode_00000 \
+    --rollout_steps 0 10 20 30 \
+    --layer 17 \
+    --task_name libero_object \
+    --task_id 0 \
+    --head_aggregation mean \
+    --token_aggregation mean \
+    --alpha 0.5 \
+    --specific_token_idx 774  # Optional: visualize specific token
+```
+
+**Parameters:**
+- `--task_name`, `--task_id`: Auto-detect task text from LIBERO (recommended)
+- `--task_text`: Manual task text (alternative to auto-detection)
+- `--specific_token_idx`: Visualize attention from a specific token (e.g., 774 for "soup")
+  - When set, `--token_aggregation` is ignored
+- `--head_aggregation`: How to combine attention heads (`mean`/`max`/`sum`)
+- `--token_aggregation`: How to combine task tokens (`mean`/`max`/`sum`)
+  - `mean`: Average attention across all task tokens (default)
+  - `max`: Take maximum attention for each image patch
+  - `sum`: Sum attention (useful for total attention magnitude)
+- `--layer`: Which transformer layer (0-17, default: 17 = last)
+- `--alpha`: Overlay transparency (0=invisible, 1=opaque)
+
+**Batch processing:**
+
+Process multiple episodes at once using the batch runner:
+
+```bash
+bash pi_setting/eval/run_visualize_vlm_attention.sh
+```
+
+Edit the script to configure:
+- `EVAL_FOLDER`: Which evaluation run to visualize
+- `TIMESTEPS`: Which rollout steps to visualize
+- `SPECIFIC_TOKEN_IDX`: Specific token to visualize (leave empty for aggregated view)
+- `TOKEN_AGG`: Aggregation strategy (mean/max/sum) - ignored if SPECIFIC_TOKEN_IDX is set
+
+**Output structure:**
+
+```
+eval_logs/quick_test/vlm_attention/libero_object_0/
+├── episode_00000_vlm_attention.pt          # Raw VLM attention data
+├── viz_episode_00000/                       # Visualizations
+│   ├── timestep_000_agentview.png          # Side-by-side: overlay | heatmap
+│   ├── timestep_000_wrist.png              # Side-by-side: overlay | heatmap
+│   ├── timestep_010_agentview_token774.png # Specific token visualization
+│   └── ...
+└── episode_00001_vlm_attention.pt
+```
+
+**Visualization format:**
+
+Each PNG file contains:
+```
+┌─────────────────────────────────────────────────┐
+│         Camera Name | Timestep N                │  ← White title bar
+├────────────────────┬────────────────────────────┤
+│                    │                            │
+│  Video + Overlay   │    Pure Attention Map      │  ← Side-by-side
+│  (with alpha=0.5)  │    (no video background)   │
+│                    │                            │
+└────────────────────┴────────────────────────────┘
+```
+
+### Analysis Workflow for VLM Attention
+
+#### Step 1: Identify Important Tokens
+
+Use the demo script to find which tokens have highest attention to images:
+
+**Quick start with batch script:**
+
+```bash
+# Edit configuration in the script
+bash pi_setting/eval/run_demo_specific_token_attention.sh
+```
+
+Edit `run_demo_specific_token_attention.sh` to configure:
+- `EVAL_FOLDER`: Which evaluation run to analyze
+- `TASK_NAME`, `TASK_ID`: Which task to analyze
+- `EPISODE_ID`: Which episode to analyze
+- `ROLLOUT_STEP`: Which timestep to analyze
+- `TOKENS_OF_INTEREST`: Keywords to highlight (e.g., "alphabet soup basket")
+
+**Or run directly:**
+
+```bash
+python demo_specific_token_attention.py \
+    --attention_file eval_logs/.../episode_00000_vlm_attention.pt \
+    --rollout_step 10 \
+    --task_name libero_object --task_id 0 \
+    --tokens_of_interest alphabet soup basket
+```
+
+**Command line options:**
+- `--attention_file`: Path to VLM attention .pt file (required)
+- `--rollout_step`: Which timestep to analyze (default: 0)
+- `--task_name`: LIBERO task suite name (required)
+- `--task_id`: LIBERO task ID (required)
+- `--tokens_of_interest`: Space-separated keywords to highlight
+- `--layer`: Transformer layer to analyze (default: 17)
+
+**Output shows:**
+- All task tokens with indices (e.g., Token 773: ' alphabet')
+- Which tokens have highest image attention (ranked)
+- Highlighted tokens matching your keywords (★ marker)
+
+Example output:
+```
+Task: "pick up the alphabet soup and place it in the basket"
+
+ALL TASK TOKENS:
+  Token 768: 'Task           ' (chars   0-  4)
+  Token 769: ':              ' (chars   4-  5)
+  Token 770: ' pick          ' (chars   5- 10)
+  Token 771: ' up            ' (chars  10- 13)
+  Token 772: ' the           ' (chars  13- 17)
+  Token 773: ' alphabet      ' (chars  17- 26) ★
+  Token 774: ' soup          ' (chars  26- 31) ★
+  Token 775: ' and           ' (chars  31- 35)
+  Token 776: ' place         ' (chars  35- 41)
+  Token 777: ' it            ' (chars  41- 44)
+  Token 778: ' in            ' (chars  44- 47)
+  Token 779: ' the           ' (chars  47- 51)
+  Token 780: ' basket        ' (chars  51- 58) ★
+  Token 781: ',              ' (chars  58- 59)
+
+Top 10 tokens by average attention to images:
+   1. Token 768: 'Task           ' - attention=0.001183
+   2. Token 774: ' soup          ' - attention=0.000488
+   3. Token 773: ' alphabet      ' - attention=0.000096
+   ...
+
+TOKENS MATCHING YOUR KEYWORDS: ['alphabet', 'soup', 'basket']
+  Token 773: ' alphabet      ' - attention to images: 0.000096
+  Token 774: ' soup          ' - attention to images: 0.000488
+  Token 780: ' basket        ' - attention to images: 0.000058
+```
+
+**Interpretation:**
+- Token 774 ("soup") has highest attention among object words
+- Token 768 ("Task") has highest overall (due to positional effects)
+- Use these indices for Step 2 visualization
+
+#### Step 2: Visualize Specific Tokens
+
+Based on Step 1 output, visualize interesting tokens:
+
+```bash
+# In run_visualize_vlm_attention.sh:
+SPECIFIC_TOKEN_IDX=774  # "soup" token
+
+./pi_setting/eval/run_visualize_vlm_attention.sh
+```
+
+Or directly:
+```bash
+python pi_setting/eval/visualize_vlm_attention.py \
+    --attention_file eval_logs/.../episode_00000_vlm_attention.pt \
+    --video_file eval_logs/.../eval_episode_00000.mp4 \
+    --output_dir viz_soup \
+    --task_name libero_object --task_id 0 \
+    --rollout_steps 10 20 30 \
+    --specific_token_idx 774
+```
+
+#### Step 3: Analyze Results
+
+Compare visualizations:
+1. Does object word attend to correct object?
+2. Does action word ("pick", "place") attend to relevant objects?
+3. Does spatial word ("in") attend to container/target location?
+
+This reveals whether the VLM correctly grounds language in visual perception.
+
+### Coordinate Transformations
+
+VLM attention maps follow the same coordinate system as action attention:
+
+| Camera | Model Space | Video Space | Transformation Needed |
+|--------|-------------|-------------|----------------------|
+| **Agentview** | Flipped | Flipped | ✅ No (aligned) |
+| **Wrist** | Flipped | Not flipped | ✅ Yes (undo flip) |
+
+The visualization scripts automatically handle these transformations by setting `apply_flip=True` for wrist camera.
+
+### Example Analysis Workflow
+
+**1. Save VLM attention during evaluation:**
+```bash
+bash pi_setting/eval/eval_libero_quick_test.sh  # With save_vlm_attention_maps=true
+```
+
+**2. Inspect saved data:**
+```python
+import torch
+
+data = torch.load("eval_logs/quick_test/vlm_attention/libero_object_0/episode_00000_vlm_attention.pt")
+
+print(f"Episode has {len(data['rollout_steps'])} rollout steps")
+print(f"Prefix length: {data['rollout_steps'][0]['vlm_attention']['prefix_len']}")
+print(f"Layers saved: {list(data['rollout_steps'][0]['vlm_attention']['attention_weights'].keys())}")
+
+# Check attention shape
+att = data['rollout_steps'][0]['vlm_attention']['attention_weights'][17]
+print(f"Attention shape: {att.shape}")  # [1, 8, 968, 968]
+```
+
+**3. Visualize task→image attention:**
+```bash
+# Single episode
+python pi_setting/eval/visualize_vlm_attention.py \
+    --attention_file eval_logs/quick_test/vlm_attention/libero_object_0/episode_00000_vlm_attention.pt \
+    --video_file eval_logs/quick_test/videos/libero_object_0/eval_episode_00000.mp4 \
+    --output_dir eval_logs/quick_test/vlm_attention/libero_object_0/viz_episode_00000 \
+    --rollout_steps 0 20 40 60 \
+    --task_text "pick up the alphabet soup and place it in the basket"
+
+# Or batch process
+bash pi_setting/eval/run_visualize_vlm_attention.sh
+```
+
+**4. Analyze attention patterns:**
+```python
+from pi_setting.eval.token_boundary_helper import TokenBoundaryHelper
+
+# Load attention
+data = torch.load("episode_00000_vlm_attention.pt")
+attention = data['rollout_steps'][0]['vlm_attention']['attention_weights'][17]  # [1, 8, 968, 968]
+
+# Find token boundaries
+task_text = "pick up the alphabet soup and place it in the basket"
+helper = TokenBoundaryHelper()
+boundaries = helper.find_token_boundaries(f"Task: {task_text}, State: ...", num_img_tokens=768)
+
+# Extract task→image attention
+task_start, task_end = boundaries['task']
+task_to_img = attention[0, :, task_start:task_end, :768]  # [8 heads, N task tokens, 768 images]
+
+# Average across heads and tokens
+task_to_img_mean = task_to_img.mean(dim=0).mean(dim=0)  # [768]
+
+# Find which image patches have highest attention
+top_k = 10
+top_patches = task_to_img_mean.topk(top_k)
+print(f"Top {top_k} attended patches: {top_patches.indices}")
+print(f"Attention values: {top_patches.values}")
+```
+
+### File Size Comparison
+
+VLM attention files are **10× smaller** than action attention files:
+
+```
+episode_00000_attention.pt          ~2.8 GB  (10 denoising steps per action)
+episode_00000_vlm_attention.pt      ~280 MB  (1 prefix encoding per action)
+```
+
+This is because:
+- VLM attention captured once per action (vs 10× for denoising)
+- But saves all 18 layers (vs 2 layers for action attention)
+
+**Storage requirements:**
+- 10 episodes with action attention: ~28 GB
+- 10 episodes with VLM attention: ~2.8 GB
+- 10 episodes with both: ~31 GB
+
+### Troubleshooting VLM Attention
+
+**Q: "VLM attention saving was enabled but no VLM attention maps were collected"**
+
+**A:** This was a bug in early versions. Make sure you have the latest code where `PaliGemmaWithExpertModel.forward()` passes `output_attentions=True` in the prefix-only branch (around line 365).
+
+**Q: Attention maps look random/noisy**
+
+**A:** Try different aggregation strategies:
+- Use `--token_aggregation=max` to highlight strongest attention
+- Try different layers: `--layer 10` (middle) or `--layer 0` (early)
+- Check specific attention heads instead of averaging
+
+**Q: Heatmaps don't align with video**
+
+**A:** Make sure:
+- Wrist camera transformations are correct (`apply_flip=True`)
+- Rollout step matches video frame index
+- Using the correct evaluation run (attention + video from same run)
+
+**Q: Error "Token index 774 out of task token range [768, 772)"**
+
+**Cause**: Task text mismatch. The code is using wrong/incomplete task text.
+
+**Solution**: Always use `--task_name` and `--task_id` for auto-detection:
+```bash
+--task_name libero_object --task_id 0
+```
+Instead of manually providing `--task_text`.
+
+**Q: Error "Must provide either --task_text OR both --task_name and --task_id"**
+
+**Solution**: Choose one:
+- Option A: `--task_text "pick up the alphabet soup and place it in the basket"`
+- Option B: `--task_name libero_object --task_id 0` (recommended - auto-detects from LIBERO)
+
+**Q: AttributeError: 'NoneType' object has no attribute 'shape'**
+
+**A:** The model's attention implementation must be set to "eager" mode (not "sdpa"). This is automatically handled during evaluation, but for debugging:
+
+```python
+model.paligemma.language_model.config._attn_implementation = "eager"
+```
+
