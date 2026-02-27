@@ -59,6 +59,12 @@ EVAL_FOLDER="quick_test"
 EVAL_SCENE_INDEX=9  # Which evaluation run to use (0-9, default: 0 = first run)
 EVAL_TASK_AMOUNT=10  # How many tasks to verify (default: 10, set to 1 for quick test)
 
+ACTION_IDX=0            # Which action index to visualize (0-48)
+DENOISING_STEP=0        # Which denoising step (0-9, default: 0 = final, t=1)
+LAYER=17                # Which transformer layer (0-17, default: 17 = last)
+COLORMAP="hot"          # Matplotlib colormap (hot, viridis, jet, etc.)
+ALPHA=0.55               # Transparency for overlay (0.0=invisible, 1.0=opaque)
+
 for i in $(seq 0 $EVAL_SCENE_INDEX); do
     for j in $(seq 0 $EVAL_TASK_AMOUNT); do
         TASK_FOLDER="libero_object_$i"
@@ -68,11 +74,7 @@ for i in $(seq 0 $EVAL_SCENE_INDEX); do
 
         # Default parameters
         TIMESTEPS="0 10 20 30 40 50 60 70 80 90 100 110 120 130 140"  # Which rollout steps to visualize
-        ACTION_IDX=0            # Which action index to visualize (0-48)
-        DENOISING_STEP=0        # Which denoising step (0-9, default: 0 = final, t=1)
-        LAYER=17                # Which transformer layer (0-17, default: 17 = last)
-        COLORMAP="hot"          # Matplotlib colormap (hot, viridis, jet, etc.)
-        ALPHA=0.55               # Transparency for overlay (0.0=invisible, 1.0=opaque)
+        
         # Run the verification script
         python pi_setting/eval/verify_attention_video_alignment.py \
             --attention_path "$ATTENTION_FILE" \
