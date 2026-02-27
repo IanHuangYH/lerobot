@@ -135,6 +135,41 @@ def _extract_batch_sample_from_attention_maps(all_attention_maps: list, batch_id
     return extracted_maps
 
 
+def _extract_batch_sample_from_vlm_attention_maps(all_vlm_attention_maps: list, batch_idx: int) -> list:
+    """Extract a single batch sample from VLM attention maps.
+    
+    Args:
+        all_vlm_attention_maps: List of rollout step dictionaries, each containing VLM attention maps
+                               with batch dimension in tensors
+        batch_idx: Which batch sample to extract (0 to batch_size-1)
+    
+    Returns:
+        New list with same structure but tensors sliced to only contain batch_idx sample
+    """
+    extracted_maps = []
+    for rollout_step_data in all_vlm_attention_maps:
+        extracted_step = {
+            'rollout_step': rollout_step_data['rollout_step'],
+            'vlm_attention': {
+                'prefix_len': rollout_step_data['vlm_attention']['prefix_len'],
+                'attention_weights': {}
+            }
+        }
+        
+        # Extract batch_idx from each layer's attention weights
+        for layer, weights in rollout_step_data['vlm_attention']['attention_weights'].items():
+            # weights shape: [B, heads, prefix_tokens, prefix_tokens]
+            if weights.dim() == 4:
+                extracted_step['vlm_attention']['attention_weights'][layer] = weights[batch_idx:batch_idx+1]
+            else:
+                # Shouldn't happen, but keep as-is if unexpected shape
+                extracted_step['vlm_attention']['attention_weights'][layer] = weights
+        
+        extracted_maps.append(extracted_step)
+    
+    return extracted_maps
+
+
 def rollout(
     env: gym.vector.VectorEnv,
     policy: PreTrainedPolicy,
@@ -146,6 +181,7 @@ def rollout(
     return_observations: bool = False,
     render_callback: Callable[[gym.vector.VectorEnv], None] | None = None,
     attention_dir: Path | None = None,
+    vlm_attention_dir: Path | None = None,
     uncertainty_dir: Path | None = None,
     batch_index: int = 0,
     n_episodes_so_far: int = 0,
@@ -212,6 +248,35 @@ def rollout(
             "Attention maps will not be saved."
         )
     
+    # Enable VLM attention map saving if requested and policy supports it
+    supports_vlm_attention = hasattr(policy, "model") and hasattr(policy.model, "enable_vlm_attention_map_saving")
+    if vlm_attention_dir is not None and supports_vlm_attention:
+        # Check if torch.compile might interfere with VLM attention map saving
+        is_compiled = (
+            hasattr(policy.model, 'sample_actions') and 
+            type(policy.model.sample_actions).__name__ == 'function'
+        )
+        if is_compiled:
+            logging.error(
+                "❌ VLM ATTENTION SAVING WILL FAIL: torch.compile() is enabled on this policy!\n"
+                "   Compiled models cannot return attention weights.\n"
+                "   \n"
+                "   To fix: Load the policy with compilation disabled:\n"
+                "     1. Set policy.compile_model=false in CLI:\n"
+                "        --policy.compile_model=false\n"
+                "     2. Or modify the policy config before loading\n"
+                "   \n"
+                "   The evaluation will continue but NO VLM attention maps will be saved."
+            )
+        else:
+            policy.model.enable_vlm_attention_map_saving()
+            logging.info("VLM attention map saving enabled for this rollout.")
+    elif vlm_attention_dir is not None and not supports_vlm_attention:
+        logging.warning(
+            f"VLM attention map saving requested but policy type '{type(policy).__name__}' does not support it. "
+            "VLM attention maps will not be saved."
+        )
+    
     # Enable uncertainty prediction if requested and policy supports it
     supports_uncertainty = hasattr(policy, "rnd_models") and policy.rnd_models is not None
     if uncertainty_dir is not None and not supports_uncertainty:
@@ -234,6 +299,9 @@ def rollout(
     
     # Store attention maps per rollout step (if enabled)
     all_attention_maps = [] if (attention_dir is not None and supports_attention) else None
+    
+    # Store VLM attention maps per rollout step (if enabled)
+    all_vlm_attention_maps = [] if (vlm_attention_dir is not None and supports_vlm_attention) else None
     
     # Store uncertainty scores per rollout step (if enabled)
     all_uncertainty_scores = [] if (uncertainty_dir is not None and supports_uncertainty) else None
@@ -283,6 +351,20 @@ def rollout(
                 logging.debug(f"Collected attention maps at rollout step {step} ({len(step_attention)} denoising steps)")
                 # Clear for next prediction
                 policy.model.clear_attention_maps()
+        
+        # Collect VLM attention maps after action selection (if enabled)
+        # VLM attention is captured once per action prediction (during prefix encoding)
+        if vlm_attention_dir is not None and supports_vlm_attention:
+            step_vlm_attention = policy.model.get_vlm_attention_maps()
+            if step_vlm_attention:  # Only non-empty when predict_action_chunk was just called
+                # Store with rollout step index
+                all_vlm_attention_maps.append({
+                    'rollout_step': step,
+                    'vlm_attention': deepcopy(step_vlm_attention),  # Deep copy to avoid overwriting
+                })
+                logging.debug(f"Collected VLM attention maps at rollout step {step}")
+                # Clear for next prediction
+                policy.model.clear_vlm_attention_maps()
         
         # Collect uncertainty scores after action selection (if enabled)
         if uncertainty_dir is not None and supports_uncertainty:
@@ -374,6 +456,34 @@ def rollout(
         else:
             logging.warning(f"Attention saving was enabled but no attention maps were collected. This may happen if torch.compile() is enabled.")
     
+    # Save VLM attention maps if enabled and supported
+    if vlm_attention_dir is not None and supports_vlm_attention:
+        if all_vlm_attention_maps:
+            # Save one file per episode in the batch
+            vlm_attention_dir.mkdir(parents=True, exist_ok=True)
+            for batch_idx in range(env.num_envs):
+                episode_idx = n_episodes_so_far + batch_idx
+                vlm_attention_path = vlm_attention_dir / f"episode_{episode_idx:05d}_vlm_attention.pt"
+                
+                # Extract only this batch sample's VLM attention maps
+                episode_vlm_attention_maps = _extract_batch_sample_from_vlm_attention_maps(all_vlm_attention_maps, batch_idx)
+                
+                # Save all rollout steps' VLM attention maps for this episode
+                torch.save(
+                    {
+                        "episode_index": episode_idx,
+                        "batch_index": batch_idx,
+                        "rollout_steps": episode_vlm_attention_maps,  # Only this episode's data
+                        "metadata": {
+                            "num_rollout_steps": len(episode_vlm_attention_maps),
+                        },
+                    },
+                    vlm_attention_path,
+                )
+            logging.info(f"Saved VLM attention maps for {env.num_envs} episodes ({len(all_vlm_attention_maps)} prediction steps each) to {vlm_attention_dir}")
+        else:
+            logging.warning(f"VLM attention saving was enabled but no VLM attention maps were collected. This may happen if torch.compile() is enabled.")
+    
     # Save uncertainty scores if enabled and supported
     if uncertainty_dir is not None and supports_uncertainty:
         if all_uncertainty_scores:
@@ -435,6 +545,7 @@ def eval_policy(
     max_episodes_rendered: int = 0,
     videos_dir: Path | None = None,
     attention_dir: Path | None = None,
+    vlm_attention_dir: Path | None = None,
     uncertainty_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
@@ -446,7 +557,8 @@ def eval_policy(
         n_episodes: The number of episodes to evaluate.
         max_episodes_rendered: Maximum number of episodes to render into videos.
         videos_dir: Where to save rendered videos.
-        attention_dir: Where to save attention maps (if policy supports it).
+        attention_dir: Where to save action attention maps (if policy supports it).
+        vlm_attention_dir: Where to save VLM attention maps (if policy supports it).
         uncertainty_dir: Where to save uncertainty scores (if policy supports it).
         return_episode_data: Whether to return episode data for online training. Incorporates the data into
             the "episodes" key of the returned dictionary.
@@ -528,6 +640,7 @@ def eval_policy(
             return_observations=return_episode_data,
             render_callback=render_frame if max_episodes_rendered > 0 else None,
             attention_dir=attention_dir,
+            vlm_attention_dir=vlm_attention_dir,
             uncertainty_dir=uncertainty_dir,
             batch_index=batch_ix,
             n_episodes_so_far=batch_ix * env.num_envs,
@@ -767,6 +880,7 @@ def eval_main(cfg: EvalPipelineConfig):
             max_episodes_rendered=10,
             videos_dir=Path(cfg.output_dir) / "videos",
             attention_dir=Path(cfg.output_dir) / "attention" if cfg.eval.save_attention_maps else None,
+            vlm_attention_dir=Path(cfg.output_dir) / "vlm_attention" if cfg.eval.save_vlm_attention_maps else None,
             uncertainty_dir=Path(cfg.output_dir) / "uncertainty" if cfg.eval.save_uncertainty_maps else None,
             start_seed=cfg.seed,
             max_parallel_tasks=cfg.env.max_parallel_tasks,
@@ -811,6 +925,7 @@ def eval_one(
     max_episodes_rendered: int,
     videos_dir: Path | None,
     attention_dir: Path | None,
+    vlm_attention_dir: Path | None,
     uncertainty_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
@@ -819,6 +934,7 @@ def eval_one(
 
     task_videos_dir = videos_dir
     task_attention_dir = attention_dir
+    task_vlm_attention_dir = vlm_attention_dir
     task_uncertainty_dir = uncertainty_dir
 
     task_result = eval_policy(
@@ -832,6 +948,7 @@ def eval_one(
         max_episodes_rendered=max_episodes_rendered,
         videos_dir=task_videos_dir,
         attention_dir=task_attention_dir,
+        vlm_attention_dir=task_vlm_attention_dir,
         uncertainty_dir=task_uncertainty_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
@@ -860,6 +977,7 @@ def run_one(
     max_episodes_rendered: int,
     videos_dir: Path | None,
     attention_dir: Path | None,
+    vlm_attention_dir: Path | None,
     uncertainty_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
@@ -879,6 +997,11 @@ def run_one(
         task_attention_dir = attention_dir / f"{task_group}_{task_id}"
         task_attention_dir.mkdir(parents=True, exist_ok=True)
     
+    task_vlm_attention_dir = None
+    if vlm_attention_dir is not None:
+        task_vlm_attention_dir = vlm_attention_dir / f"{task_group}_{task_id}"
+        task_vlm_attention_dir.mkdir(parents=True, exist_ok=True)
+    
     task_uncertainty_dir = None
     if uncertainty_dir is not None:
         task_uncertainty_dir = uncertainty_dir / f"{task_group}_{task_id}"
@@ -896,6 +1019,7 @@ def run_one(
         max_episodes_rendered=max_episodes_rendered,
         videos_dir=task_videos_dir,
         attention_dir=task_attention_dir,
+        vlm_attention_dir=task_vlm_attention_dir,
         uncertainty_dir=task_uncertainty_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
@@ -918,6 +1042,7 @@ def eval_policy_all(
     max_episodes_rendered: int = 0,
     videos_dir: Path | None = None,
     attention_dir: Path | None = None,
+    vlm_attention_dir: Path | None = None,
     uncertainty_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
@@ -976,6 +1101,7 @@ def eval_policy_all(
         max_episodes_rendered=max_episodes_rendered,
         videos_dir=videos_dir,
         attention_dir=attention_dir,
+        vlm_attention_dir=vlm_attention_dir,
         uncertainty_dir=uncertainty_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,

@@ -448,6 +448,8 @@ class PaliGemmaWithExpertModel(
         if adarms_cond is None:
             adarms_cond = [None, None]
         if inputs_embeds[1] is None:
+            # PREFIX ONLY (initial encoding)
+            # Need to capture attention if requested
             prefix_output = self.paligemma.language_model.forward(
                 inputs_embeds=inputs_embeds[0],
                 attention_mask=attention_mask,
@@ -455,11 +457,19 @@ class PaliGemmaWithExpertModel(
                 past_key_values=past_key_values,
                 use_cache=use_cache,
                 adarms_cond=adarms_cond[0] if adarms_cond is not None else None,
+                output_attentions=return_attention_weights,
             )
             prefix_past_key_values = prefix_output.past_key_values
-            prefix_output = prefix_output.last_hidden_state
+            prefix_output_hidden = prefix_output.last_hidden_state
+            
+            # Extract attention weights if requested
+            if return_attention_weights and hasattr(prefix_output, 'attentions') and prefix_output.attentions is not None:
+                all_attention_weights = {i: att for i, att in enumerate(prefix_output.attentions)}
+            else:
+                all_attention_weights = None
+            
+            prefix_output = prefix_output_hidden
             suffix_output = None
-            all_attention_weights = None
         elif inputs_embeds[0] is None:
             # SUFFIX ONLY (with past_key_values from prefix)
             # Need to use transformers forward with output_attentions=True
@@ -617,6 +627,14 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         self.rnd_models = None
         self.latest_image_embeddings = None
         self.uncertainty_enabled = False
+        
+        # Attention map saving (for action expert)
+        self.save_attention_maps = False
+        self.attention_maps = {}
+        
+        # VLM attention map saving (for prefix self-attention)
+        self.save_vlm_attention_maps = False
+        self.vlm_attention_maps = {}
 
         # Compile model if requested
         if config.compile_model:
@@ -667,6 +685,22 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         """Disable saving attention maps."""
         self.save_attention_maps = False
     
+    def enable_vlm_attention_map_saving(self):
+        """Enable saving VLM prefix attention maps during inference.
+        
+        This captures self-attention within the prefix (image ↔ language, image ↔ image,
+        language ↔ language) during the initial encoding pass, before action denoising.
+        
+        WARNING: This may cause issues with torch.compile(). If you get errors about
+        None attention weights, you may need to disable compilation or reload the model.
+        """
+        self.save_vlm_attention_maps = True
+        self.vlm_attention_maps = {}
+    
+    def disable_vlm_attention_map_saving(self):
+        """Disable saving VLM attention maps."""
+        self.save_vlm_attention_maps = False
+    
     def get_attention_maps(self, last_n_layers=None):
         """Get saved attention maps.
         
@@ -715,6 +749,47 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
     def clear_attention_maps(self):
         """Clear stored attention maps to free memory."""
         self.attention_maps = {}
+    
+    def get_vlm_attention_maps(self, last_n_layers=None):
+        """Get saved VLM prefix attention maps.
+        
+        Args:
+            last_n_layers: If specified, only return attention from last N layers.
+                          If None, return all layers.
+        
+        Returns:
+            Dictionary with structure:
+            {
+                'attention_weights': {layer_idx: tensor},
+                'prefix_len': int,
+            }
+        """
+        if not self.vlm_attention_maps:
+            return {}
+        
+        if last_n_layers is None:
+            return self.vlm_attention_maps
+        
+        # Filter to only include last N layers
+        att_weights = self.vlm_attention_maps.get('attention_weights', {})
+        if att_weights is None or not att_weights:
+            return {}
+        
+        max_layer = max(att_weights.keys())
+        filtered_weights = {
+            layer: weights 
+            for layer, weights in att_weights.items() 
+            if layer >= (max_layer - last_n_layers + 1)
+        }
+        
+        return {
+            'attention_weights': filtered_weights,
+            'prefix_len': self.vlm_attention_maps.get('prefix_len', 0),
+        }
+    
+    def clear_vlm_attention_maps(self):
+        """Clear stored VLM attention maps to free memory."""
+        self.vlm_attention_maps = {}
 
     def _apply_checkpoint(self, func, *args, **kwargs):
         """Helper method to apply gradient checkpointing if enabled."""
@@ -934,13 +1009,28 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
         self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
 
-        _, past_key_values = self.paligemma_with_expert.forward(
+        # Forward pass through prefix (with optional VLM attention capture)
+        result = self.paligemma_with_expert.forward(
             attention_mask=prefix_att_2d_masks_4d,
             position_ids=prefix_position_ids,
             past_key_values=None,
             inputs_embeds=[prefix_embs, None],
             use_cache=True,
+            return_attention_weights=self.save_vlm_attention_maps,
         )
+        
+        # Extract outputs based on whether attention was requested
+        if self.save_vlm_attention_maps:
+            _, past_key_values, vlm_att_weights = result
+            # Store VLM attention weights with metadata (skip if None due to torch.compile)
+            if vlm_att_weights is not None:
+                prefix_len = prefix_embs.shape[1]
+                self.vlm_attention_maps = {
+                    'attention_weights': vlm_att_weights,
+                    'prefix_len': prefix_len,
+                }
+        else:
+            _, past_key_values = result
 
         dt = -1.0 / num_steps
 
