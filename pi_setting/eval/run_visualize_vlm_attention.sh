@@ -50,18 +50,40 @@ EVAL_SCENE_INDEX=0      # Max task ID (0-9 for libero_object/spatial/goal)
 EVAL_TASK_AMOUNT=1      # Max episode per task
 
 # Which rollout steps to visualize
-TIMESTEPS=(0 10 20 30 40 50 60 70 80 90 100)
+TIMESTEPS=(30 40 50 60 70 80 90 100 110 120 130 140)  # Visualize at these rollout steps (0 = prefix encoding, 10/20/30 = during execution)
 
 # Visualization parameters
-LAYER=15                  # Which transformer layer (17 = last layer)
+LAYERS=(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17)         # Which transformer layers to visualize (0-17, can specify multiple)
 HEAD_AGG="min"          # How to aggregate attention heads: mean/max/sum
 TOKEN_AGG="mean"         # How to aggregate task tokens: mean/max/sum
 ALPHA=0.5                # Overlay transparency (0=transparent, 1=opaque)
 COLORMAP="hot"           # Matplotlib colormap: hot/viridis/jet/etc
 
-# Optional: Visualize specific token (leave empty for aggregated view)
-# Example: SPECIFIC_TOKEN_IDX=773  # for 'alphabet' token
-SPECIFIC_TOKEN_IDX="774"    # Leave empty to aggregate all task tokens, or set to specific token index
+# Optional: Visualize specific tokens (leave empty for aggregated view)
+# Example: SPECIFIC_TOKEN_IDXS=(773 774 780)  # for 'alphabet', 'soup', 'basket' tokens
+# Leave empty or set to () to aggregate all task tokens with TOKEN_AGG
+SPECIFIC_TOKEN_IDXS=(770 773 774 775 776 780)    # Can specify multiple token indices to loop through
+# tokens for "pick up the alphabet soup and place it in the basket":
+# Token 768: 'Task           ' (chars   0-  4)
+#   Token 769: ':              ' (chars   4-  5)
+#   Token 770: ' pick          ' (chars   5- 10)
+#   Token 771: ' up            ' (chars  10- 13)
+#   Token 772: ' the           ' (chars  13- 17)
+#   Token 773: ' alphabet      ' (chars  17- 26) ★
+#   Token 774: ' soup          ' (chars  26- 31) ★
+#   Token 775: ' and           ' (chars  31- 35)
+#   Token 776: ' place         ' (chars  35- 41)
+#   Token 777: ' it            ' (chars  41- 44)
+#   Token 778: ' in            ' (chars  44- 47)
+#   Token 779: ' the           ' (chars  47- 51)
+#   Token 780: ' basket        ' (chars  51- 58) ★
+#   Token 781: ',              ' (chars  58- 59)
+
+
+# Optional: Visualize specific attention heads (leave empty for aggregated view)
+# Example: SPECIFIC_HEAD_IDXS=(0 3 6)  # for heads 0, 3, 6 (out of 0-7)
+# Leave empty or set to () to aggregate all heads with HEAD_AGG
+SPECIFIC_HEAD_IDXS=(0 1 2 3 4 5 6 7)    # Can specify multiple head indices to loop through
 
 # NOTE: Task texts are now auto-detected from LIBERO instead of hardcoded!
 # This ensures we use the exact task instruction from the dataset.
@@ -76,11 +98,56 @@ echo "==========================================================================
 echo "Eval folder: $EVAL_FOLDER"
 echo "Processing tasks 0-${EVAL_SCENE_INDEX}, episodes 0-$((EVAL_TASK_AMOUNT-1))"
 echo "Timesteps: ${TIMESTEPS[@]}"
-echo "Layer: $LAYER, Aggregation: heads=$HEAD_AGG, tokens=$TOKEN_AGG"
+echo "Layers: ${LAYERS[@]}, Aggregation: heads=$HEAD_AGG, tokens=$TOKEN_AGG"
+echo "Specific tokens: ${SPECIFIC_TOKEN_IDXS[@]:-None} (overrides token aggregation)"
+echo "Specific heads: ${SPECIFIC_HEAD_IDXS[@]:-None} (overrides head aggregation)"
 echo "================================================================================"
 
 TOTAL_PROCESSED=0
 TOTAL_ERRORS=0
+
+# Loop through layers
+for LAYER in "${LAYERS[@]}"; do
+    echo ""
+    echo "################################################################################"
+    echo "Processing Layer: $LAYER"
+    echo "################################################################################"
+
+    # Determine token indices to process (check once)
+    if [ ${#SPECIFIC_TOKEN_IDXS[@]} -eq 0 ]; then
+        TOKEN_INDICES=("")
+        echo "  Token mode: Aggregating all tokens with $TOKEN_AGG"
+    else
+        TOKEN_INDICES=("${SPECIFIC_TOKEN_IDXS[@]}")
+        echo "  Token mode: Processing specific tokens: ${SPECIFIC_TOKEN_IDXS[@]}"
+    fi
+
+    # Determine head indices to process (check once)
+    if [ ${#SPECIFIC_HEAD_IDXS[@]} -eq 0 ]; then
+        HEAD_INDICES=("")
+        echo "  Head mode: Aggregating all heads with $HEAD_AGG"
+    else
+        HEAD_INDICES=("${SPECIFIC_HEAD_IDXS[@]}")
+        echo "  Head mode: Processing specific heads: ${SPECIFIC_HEAD_IDXS[@]}"
+    fi
+
+    # Loop through token indices
+    for TOKEN_IDX in "${TOKEN_INDICES[@]}"; do
+        if [ -n "$TOKEN_IDX" ]; then
+            echo ""
+            echo "  ============================================================================"
+            echo "  Processing Token Index: $TOKEN_IDX"
+            echo "  ============================================================================"
+        fi
+
+        # Loop through head indices
+        for HEAD_IDX in "${HEAD_INDICES[@]}"; do
+            if [ -n "$HEAD_IDX" ]; then
+                echo ""
+                echo "    ------------------------------------------------------------------------"
+                echo "    Processing Head Index: $HEAD_IDX"
+                echo "    ------------------------------------------------------------------------"
+            fi
 
 # Loop through tasks
 for TASK_ID in $(seq 0 $EVAL_SCENE_INDEX); do
@@ -127,12 +194,20 @@ for TASK_ID in $(seq 0 $EVAL_SCENE_INDEX); do
             --colormap $COLORMAP"
         
         # Add specific_token_idx if set (ignores TOKEN_AGG when specific token is used)
-        if [ -n "$SPECIFIC_TOKEN_IDX" ]; then
-            CMD="$CMD --specific_token_idx $SPECIFIC_TOKEN_IDX"
-            echo "    → Visualizing specific token: $SPECIFIC_TOKEN_IDX (TOKEN_AGG ignored)"
+        if [ -n "$TOKEN_IDX" ]; then
+            CMD="$CMD --specific_token_idx $TOKEN_IDX"
+            echo "          → Visualizing specific token: $TOKEN_IDX (TOKEN_AGG ignored)"
         else
             CMD="$CMD --token_aggregation $TOKEN_AGG"
-            echo "    → Aggregating all task tokens with: $TOKEN_AGG"
+            echo "          → Aggregating all task tokens with: $TOKEN_AGG"
+        fi
+        
+        # Add specific_head_idx if set (ignores HEAD_AGG when specific head is used)
+        if [ -n "$HEAD_IDX" ]; then
+            CMD="$CMD --specific_head_idx $HEAD_IDX"
+            echo "          → Visualizing specific head: $HEAD_IDX (HEAD_AGG ignored)"
+        else
+            echo "          → Aggregating all attention heads with: $HEAD_AGG"
         fi
         
         # Run visualization (task text auto-detected from LIBERO)
@@ -147,6 +222,10 @@ for TASK_ID in $(seq 0 $EVAL_SCENE_INDEX); do
         fi
     done
 done
+
+        done  # End head loop
+    done  # End token loop
+done  # End layer loop
 
 # -----------------------------------------------------------------------------
 # SUMMARY

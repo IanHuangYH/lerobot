@@ -121,6 +121,7 @@ def extract_task_to_img_attention(
     head_aggregation: str = "mean",
     token_aggregation: str = "mean",
     specific_token_idx: Optional[int] = None,
+    specific_head_idx: Optional[int] = None,
 ) -> np.ndarray:
     """
     Extract attention from task tokens to image patches of a specific camera.
@@ -131,8 +132,10 @@ def extract_task_to_img_attention(
         camera_index: Which camera (0=agentview, 1=wrist, 2=empty)
         num_img_patches: Patches per camera (256 for 16x16 grid)
         num_cameras: Total cameras (3 for LIBERO)
-        head_aggregation: "mean", "max", or "sum" across attention heads
-        token_aggregation: "mean", "max", or "sum" across task tokens
+        head_aggregation: "mean", "max", "min", or "sum" across attention heads (ignored if specific_head_idx is set)
+        token_aggregation: "mean", "max", "min", or "sum" across task tokens (ignored if specific_token_idx is set)
+        specific_token_idx: If set, use only this token index instead of aggregating
+        specific_head_idx: If set, use only this head index (0-7) instead of aggregating
     
     Returns:
         2D attention map of shape [16, 16]
@@ -171,9 +174,14 @@ def extract_task_to_img_attention(
         else:
             raise ValueError(f"Unknown token_aggregation: {token_aggregation}")
     
-    # Aggregate across attention heads
+    # Aggregate across attention heads (or select specific head)
     # [8, img_patches] → [img_patches]
-    if head_aggregation == "mean":
+    if specific_head_idx is not None:
+        # Select specific head
+        if specific_head_idx < 0 or specific_head_idx >= task_to_img.shape[0]:
+            raise ValueError(f"Head index {specific_head_idx} out of range [0, {task_to_img.shape[0]}]")
+        task_to_img = task_to_img[specific_head_idx]  # [img_patches]
+    elif head_aggregation == "mean":
         task_to_img = task_to_img.mean(dim=0)
     elif head_aggregation == "max":
         task_to_img = task_to_img.max(dim=0)[0]
@@ -390,6 +398,7 @@ def visualize_vlm_attention_for_timestep(
     alpha: float = 0.5,
     colormap: str = "hot",
     specific_token_idx: int = None,
+    specific_head_idx: int = None,
 ):
     """
     Create VLM attention visualizations for a single timestep.
@@ -448,6 +457,7 @@ def visualize_vlm_attention_for_timestep(
             head_aggregation=head_aggregation,
             token_aggregation=token_aggregation,
             specific_token_idx=specific_token_idx,
+            specific_head_idx=specific_head_idx,
         )
         
         # COORDINATE TRANSFORMATION:
@@ -470,10 +480,13 @@ def visualize_vlm_attention_for_timestep(
         )
         
         # Save PNG
+        suffix = f"_layer{layer}"
         if specific_token_idx is not None:
-            output_path = output_dir / f"timestep_{rollout_step:03d}_{camera_name}_token{specific_token_idx}.png"
-        else:
-            output_path = output_dir / f"timestep_{rollout_step:03d}_{camera_name}.png"
+            suffix += f"_token{specific_token_idx}"
+        if specific_head_idx is not None:
+            suffix += f"_head{specific_head_idx}"
+        
+        output_path = output_dir / f"timestep_{rollout_step:03d}_{camera_name}{suffix}.png"
         cv2.imwrite(str(output_path), cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
         
         print(f"    Saved: {output_path.name}")
@@ -564,6 +577,12 @@ def main():
         default=None,
         help="Visualize attention from a specific token index (e.g., 773 for 'alphabet'). When set, token_aggregation is ignored."
     )
+    parser.add_argument(
+        "--specific_head_idx",
+        type=int,
+        default=None,
+        help="Visualize attention from a specific head index (0-7). When set, head_aggregation is ignored."
+    )
     
     args = parser.parse_args()
     
@@ -589,8 +608,9 @@ def main():
     print(f"Rollout steps: {args.rollout_steps}")
     print(f"Layer: {args.layer}")
     print(f"Task text: {args.task_text}")
-    print(f"Specific token: {args.specific_token_idx if args.specific_token_idx else 'None (aggregate all)'}")
-    print(f"Aggregation: heads={args.head_aggregation}, tokens={args.token_aggregation if args.specific_token_idx is None else 'N/A'}")
+    print(f"Specific token: {args.specific_token_idx if args.specific_token_idx is not None else 'None (aggregate all)'}")
+    print(f"Specific head: {args.specific_head_idx if args.specific_head_idx is not None else 'None (aggregate all)'}")
+    print(f"Aggregation: heads={args.head_aggregation if args.specific_head_idx is None else 'N/A'}, tokens={args.token_aggregation if args.specific_token_idx is None else 'N/A'}")
     print("=" * 80)
     
     # Process each rollout step
@@ -609,6 +629,7 @@ def main():
                 alpha=args.alpha,
                 colormap=args.colormap,
                 specific_token_idx=args.specific_token_idx,
+                specific_head_idx=args.specific_head_idx,
             )
         except Exception as e:
             print(f"  ERROR: {e}")

@@ -981,6 +981,248 @@ This is because:
 - 10 episodes with VLM attention: ~2.8 GB
 - 10 episodes with both: ~31 GB
 
+### Creating Attention Grid Visualizations
+
+After generating individual attention visualizations with `run_visualize_vlm_attention.sh`, you can combine them into comprehensive grid layouts to analyze how attention patterns evolve across transformer layers and attention heads.
+
+#### What is an Attention Grid?
+
+An **attention grid** is a single image showing multiple attention visualizations arranged in a matrix:
+- **Rows**: Different transformer layers (0-17, showing attention evolution through network depth)
+- **Columns**: Different attention heads (0-7, showing head specialization)
+- **Each cell**: Attention overlay for one layer-head combination
+
+This enables systematic analysis:
+- **Layer evolution**: How attention patterns change from early (layer 0) to late (layer 17) layers
+- **Head specialization**: Whether different heads focus on different aspects (objects, spatial relations, etc.)
+- **Comprehensive view**: All combinations in one image for easy comparison
+
+#### Grid Layout Structure
+
+```
+                    Head 0      Head 1      Head 2  ...  Head 7
+        Layer 0     [image]     [image]     [image] ...  [image]
+        Layer 1     [image]     [image]     [image] ...  [image]
+        Layer 2     [image]     [image]     [image] ...  [image]
+        ...
+        Layer 17    [image]     [image]     [image] ...  [image]
+```
+
+**Features:**
+- Title bar at top with metadata (timestep, camera, token, layer/head ranges)
+- Layer labels on left margin ("Layer 0", "Layer 1", ...)
+- Head labels on top margin ("Head 0", "Head 1", ...)
+- Small padding between subplots (5 pixels) for visual separation
+- Each subplot shows only the attention overlay (no individual title bars)
+
+#### Quick Start
+
+**Step 1: Generate individual visualizations**
+
+First, create individual attention maps using `run_visualize_vlm_attention.sh`:
+
+```bash
+# Configure to save all layers and heads
+# Edit run_visualize_vlm_attention.sh:
+LAYERS=(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17)
+SPECIFIC_HEAD_IDXS=(0 1 2 3 4 5 6 7)
+SPECIFIC_TOKEN_IDXS=(774)  # "soup" token
+
+# Run visualization
+bash pi_setting/eval/run_visualize_vlm_attention.sh
+```
+
+This creates individual PNGs like:
+- `timestep_000_agentview_layer0_token774_head0.png`
+- `timestep_000_agentview_layer0_token774_head1.png`
+- ... (18 layers × 8 heads = 144 images per timestep/camera/token)
+
+**Step 2: Create grid visualization**
+
+```bash
+# Run the grid creation script
+bash pi_setting/eval/create_attention_grid.sh
+```
+
+This combines all individual images into grids like:
+- `timestep_000_agentview_token774_layer0to17_head0to7.png` (8×18 grid)
+- `timestep_010_agentview_token774_layer0to17_head0to7.png`
+- `timestep_020_wrist_token774_layer0to17_head0to7.png`
+
+#### Configuration
+
+Edit `create_attention_grid.sh` to customize:
+
+```bash
+# Source data
+EVAL_FOLDER="quick_test_vlm_attention_1"
+TASK_NAME="libero_object_0"
+EPISODE_NUM="00000"
+
+# Which visualizations to combine
+TIMESTEPS=(0 10 20)                    # Which rollout steps
+CAMERAS=("agentview" "wrist")          # Which cameras
+SPECIFIC_TOKEN_IDXS=(770 773 774 775 776 780)  # Which tokens
+
+# Grid configuration
+LAYERS=(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17)  # All layers
+HEADS=(0 1 2 3 4 5 6 7)                                # All heads
+
+# Visual settings
+PADDING=5           # Pixels between subplots
+LABEL_FONT_SIZE=12  # Font size for head/layer labels
+TITLE_FONT_SIZE=16  # Font size for title bar
+```
+
+#### Output
+
+**File naming:**
+```
+timestep_{step:03d}_{camera}_token{token}_layer{min}to{max}_head{min}to{max}.png
+```
+
+**Examples:**
+- `timestep_000_agentview_token774_layer0to17_head0to7.png` - Full 8×18 grid
+- `timestep_010_wrist_token780_layer0to17_head0to7.png` - Wrist camera, "basket" token
+
+**Output location:**
+```
+eval_logs/{EVAL_FOLDER}/vlm_attention/{TASK_NAME}/viz_episode_{N}/grids/
+├── timestep_000_agentview_token774_layer0to17_head0to7.png
+├── timestep_010_agentview_token774_layer0to17_head0to7.png
+├── timestep_020_agentview_token774_layer0to17_head0to7.png
+├── timestep_000_wrist_token774_layer0to17_head0to7.png
+└── ...
+```
+
+#### Image Dimensions
+
+**For full 8×18 grid:**
+- Each subplot: ~256×256 pixels (attention overlay only, title bar removed)
+- Grid width: 80 (left margin) + 8 × 256 + 7 × 5 (padding) ≈ **2133 pixels**
+- Grid height: 130 (top margin + title) + 18 × 256 + 17 × 5 (padding) ≈ **4823 pixels**
+
+**Total**: ~2133 × 4823 pixels (~10 MB PNG file)
+
+This is large but allows zooming in to see details while maintaining overview.
+
+#### Advanced Usage
+
+**Create partial grids (faster, smaller files):**
+
+```bash
+# Edit create_attention_grid.sh:
+LAYERS=(0 5 10 15 17)  # Sample 5 layers instead of all 18
+HEADS=(0 2 4 6)        # Sample 4 heads instead of all 8
+
+# Creates 4×5 grid instead of 8×18
+```
+
+**Direct Python invocation:**
+
+```bash
+python pi_setting/eval/create_attention_grid.py \
+    --input_dir eval_logs/.../viz_episode_00000 \
+    --output_dir eval_logs/.../viz_episode_00000/grids \
+    --timestep 10 \
+    --camera agentview \
+    --token_idx 774 \
+    --layers "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17" \
+    --heads "0,1,2,3,4,5,6,7" \
+    --padding 5 \
+    --label_font_size 12 \
+    --title_font_size 16
+```
+
+#### Analysis Workflow
+
+**Complete workflow for attention analysis:**
+
+```bash
+# Step 1: Save VLM attention during evaluation
+bash pi_setting/eval/eval_libero_quick_test.sh  # With save_vlm_attention_maps=true
+
+# Step 2: Identify interesting tokens
+bash pi_setting/eval/run_demo_specific_token_attention.sh
+
+# Step 3: Generate individual visualizations for all layers/heads
+# Edit run_visualize_vlm_attention.sh:
+#   LAYERS=(0 1 2 ... 17)  # All layers
+#   SPECIFIC_HEAD_IDXS=(0 1 ... 7)  # All heads
+#   SPECIFIC_TOKEN_IDXS=(774)  # From Step 2
+bash pi_setting/eval/run_visualize_vlm_attention.sh
+
+# Step 4: Create grid visualizations
+bash pi_setting/eval/create_attention_grid.sh
+
+# Step 5: Analyze results
+# Open grids and look for patterns:
+# - Which layers show object-specific attention?
+# - Do different heads specialize?
+# - How does attention evolve across layers?
+```
+
+#### What to Look For
+
+**Layer progression (vertical):**
+- **Early layers (0-5)**: Low-level features, edges, textures
+- **Middle layers (6-12)**: Object parts, spatial relationships
+- **Late layers (13-17)**: Semantic understanding, task-relevant objects
+
+**Head specialization (horizontal):**
+- Do some heads focus on specific objects?
+- Do some heads attend to spatial relationships?
+- Do some heads show broader context attention?
+
+**Consistency:**
+- Does attention to task-relevant objects increase in later layers?
+- Are certain heads consistently more selective?
+- Does attention match expected object locations?
+
+#### Example Interpretation
+
+For task "pick up the alphabet soup and place it in the basket" with token 774 ("soup"):
+
+**Expected patterns:**
+- **Layer 0-3**: Distributed attention (no clear object focus)
+- **Layer 4-8**: Attention starts concentrating on soup can
+- **Layer 9-17**: Strong, focused attention on soup can
+- **Some heads**: Sharp focus on soup can (object-specific)
+- **Other heads**: Broader attention including basket (context)
+
+**What this reveals:**
+- The model progressively refines understanding through layers
+- Different heads capture different aspects (object vs. context)
+- Late layers show clear task-relevant object grounding
+
+#### Troubleshooting
+
+**Q: "Missing" gray boxes in grid**
+
+**A:** Some individual visualizations weren't created. Check:
+1. Did `run_visualize_vlm_attention.sh` complete successfully?
+2. Are all layer/head combinations in `LAYERS` and `SPECIFIC_HEAD_IDXS`?
+3. Check input directory for missing PNG files
+
+**Q: Subplots still have title bars**
+
+**A:** The extraction isn't working correctly. This was fixed by adjusting the white detection threshold from 240 to 200. Make sure you have the latest version of `create_attention_grid.py`.
+
+**Q: Grid image too large to view**
+
+**A:** Options:
+1. Create partial grids with fewer layers/heads
+2. Use image viewer with zoom (e.g., `eog`, `feh`)
+3. View on high-resolution display
+4. Create separate grids for layer groups (0-8, 9-17)
+
+**Q: File not found errors**
+
+**A:** Make sure:
+1. Input directory path is correct in `create_attention_grid.sh`
+2. Individual visualizations exist (check with `ls`)
+3. File naming matches expected pattern (layer/token/head indices)
+
 ### Troubleshooting VLM Attention
 
 **Q: "VLM attention saving was enabled but no VLM attention maps were collected"**

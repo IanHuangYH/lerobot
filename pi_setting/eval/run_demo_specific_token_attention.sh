@@ -84,7 +84,7 @@ echo ""
 # RUN ANALYSIS
 # -----------------------------------------------------------------------------
 
-python demo_specific_token_attention.py \
+python pi_setting/eval/demo_specific_token_attention.py \
     --attention_file "$ATTENTION_FILE" \
     --rollout_step $ROLLOUT_STEP \
     --task_name $TASK_NAME \
