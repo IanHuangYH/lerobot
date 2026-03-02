@@ -131,6 +131,7 @@ def run_evaluation_for_variant(
             f"--env.task_ids={eval_config['task_ids']}",
             f"--env.init_states={eval_config['use_init_states']}",
             f"--eval.save_attention_maps={eval_config['save_attention_maps']}",
+            f"--eval.save_vlm_attention_maps={eval_config['save_vlm_attention_maps']}",
             f"--eval.save_uncertainty_maps={eval_config['save_uncertainty_maps']}",
         ]
         
@@ -179,6 +180,22 @@ def run_evaluation_for_variant(
                 print(f"   Copied attention: {new_name}")
         else:
             print(f"   Attention dir not found: {temp_attention_dir}")
+        
+        # Copy VLM attention files (separate directory from action attention)
+        temp_vlm_attention_dir = temp_output_dir / "vlm_attention" / task_key
+        final_vlm_attention_dir = variants_dir / "vlm_attention" / task_key
+        
+        if temp_vlm_attention_dir.exists():
+            final_vlm_attention_dir.mkdir(parents=True, exist_ok=True)
+            vlm_attention_files = list(temp_vlm_attention_dir.glob("episode_*_vlm_attention.pt"))
+            print(f"   Found {len(vlm_attention_files)} VLM attention files")
+            for file in vlm_attention_files:
+                # Extract episode number from original filename
+                # Format: episode_00000_vlm_attention.pt
+                old_episode_num = file.stem.split('_')[1]
+                new_name = file.name.replace(f"episode_{old_episode_num}", f"episode_{episode_number:05d}")
+                shutil.copy2(file, final_vlm_attention_dir / new_name)
+                print(f"   Copied VLM attention: {new_name}")
         
         # Copy uncertainty files
         temp_uncertainty_dir = temp_output_dir / "uncertainty" / task_key
@@ -378,6 +395,7 @@ def main():
     parser.add_argument("--compile_model", type=str, default="false", help="Compile model")
     parser.add_argument("--use_init_states", type=str, default="true", help="Use init states")
     parser.add_argument("--save_attention_maps", type=str, default="true", help="Save attention maps")
+    parser.add_argument("--save_vlm_attention_maps", type=str, default="false", help="Save VLM attention maps")
     parser.add_argument("--save_uncertainty_maps", type=str, default="false", help="Save uncertainty maps")
     parser.add_argument("--output_dir", type=str, required=True, help="Base output directory (all tasks)")
     parser.add_argument("--bddl_dir", type=str, required=True, help="Directory containing BDDL files")
@@ -446,6 +464,7 @@ def main():
         'compile_model': args.compile_model,
         'use_init_states': args.use_init_states,
         'save_attention_maps': args.save_attention_maps,
+        'save_vlm_attention_maps': args.save_vlm_attention_maps,
         'save_uncertainty_maps': args.save_uncertainty_maps,
     }
     
@@ -485,6 +504,9 @@ def main():
     print(f"Failed: {failed}")
     print(f"\nResults saved in: {base_output_dir}")
     print(f"  - Attention maps: {base_output_dir}/attention/libero_{args.task_suite.replace('libero_', '')}_{args.task_id}/")
+    print(f"    * Action attention: episode_*_attention.pt")
+    print(f"    * VLM attention: episode_*_vlm_attention.pt")
+    print(f"  - Uncertainty maps: {base_output_dir}/uncertainty/libero_{args.task_suite.replace('libero_', '')}_{args.task_id}/")
     print(f"  - Videos: {base_output_dir}/videos/libero_{args.task_suite.replace('libero_', '')}_{args.task_id}/")
     print(f"  - Summary: {base_output_dir}/eval_info.json")
     print(f"{'='*80}\n")
