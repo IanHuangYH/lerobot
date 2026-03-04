@@ -12,6 +12,10 @@ TASK_SUITE=libero_object  # libero_spatial,libero_object,libero_goal,libero_10,l
 EPISODE=1  # run amount for each task (for success rate)
 TASK_IDS='[0]'  # different scenes for one group
 
+# Custom task text for general VLM attention baseline (optional)
+# Default: "task: perform the task"
+GENERAL_VLM_ATTENTION_TASK_TEXT="task: perform the task"
+
 # Set batch_size to min(EPISODE, 10) to avoid validation errors
 BATCH_SIZE=$(( EPISODE < 2 ? EPISODE : 1 ))
 
@@ -42,6 +46,7 @@ CUDA_VISIBLE_DEVICES=$ALL_GPU lerobot-eval \
     --eval.save_attention_maps=true \
     --eval.save_vlm_attention_maps=true \
     --eval.save_general_vlm_attention_maps=true \
+    --eval.general_vlm_attention_task_text="$GENERAL_VLM_ATTENTION_TASK_TEXT" \
     --eval.save_uncertainty_maps=true
 
 echo ""

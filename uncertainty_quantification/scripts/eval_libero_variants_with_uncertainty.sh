@@ -28,6 +28,8 @@ USE_INIT_STATES="true"
 SAVE_ATTENTION_MAPS="true"
 SAVE_VLM_ATTENTION_MAPS="true"
 SAVE_GENERAL_VLM_ATTENTION_MAPS="true"
+# Custom task text for general VLM attention baseline (default: "task: perform the task")
+GENERAL_VLM_ATTENTION_TASK_TEXT="task: perform the task"
 SAVE_UNCERTAINTY_MAPS="true"
 
 echo "================================================================================"
@@ -63,6 +65,7 @@ for TASK_ID in "${TASK_IDS[@]}"; do
         --save_attention_maps "$SAVE_ATTENTION_MAPS" \
         --save_vlm_attention_maps "$SAVE_VLM_ATTENTION_MAPS" \
         --save_general_vlm_attention_maps "$SAVE_GENERAL_VLM_ATTENTION_MAPS" \
+        --general_vlm_attention_task_text "$GENERAL_VLM_ATTENTION_TASK_TEXT" \
         --save_uncertainty_maps "$SAVE_UNCERTAINTY_MAPS" \
         --output_dir "$OUTPUT_DIR" \
         --bddl_dir "$BDDL_DIR" \

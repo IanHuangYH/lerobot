@@ -65,6 +65,9 @@ class EvalConfig:
     # Whether to save general VLM attention baseline with dummy task ("task: perform the task")
     # This establishes baseline attention patterns for comparing against task-specific attention
     save_general_vlm_attention_maps: bool = False
+    # Custom task text to use for general VLM attention baseline (default: "task: perform the task")
+    # This text is used when save_general_vlm_attention_maps=True to create baseline attention patterns
+    general_vlm_attention_task_text: str = "task: perform the task"
     # Whether to save uncertainty maps during evaluation (only for policies with RND models loaded)
     save_uncertainty_maps: bool = False
 

@@ -133,6 +133,7 @@ def run_evaluation_for_variant(
             f"--eval.save_attention_maps={eval_config['save_attention_maps']}",
             f"--eval.save_vlm_attention_maps={eval_config['save_vlm_attention_maps']}",
             f"--eval.save_general_vlm_attention_maps={eval_config['save_general_vlm_attention_maps']}",
+            f"--eval.general_vlm_attention_task_text={eval_config['general_vlm_attention_task_text']}",
             f"--eval.save_uncertainty_maps={eval_config['save_uncertainty_maps']}",
         ]
         
@@ -398,6 +399,7 @@ def main():
     parser.add_argument("--save_attention_maps", type=str, default="true", help="Save attention maps")
     parser.add_argument("--save_vlm_attention_maps", type=str, default="false", help="Save VLM attention maps")
     parser.add_argument("--save_general_vlm_attention_maps", type=str, default="false", help="Save general VLM attention baseline maps")
+    parser.add_argument("--general_vlm_attention_task_text", type=str, default="task: perform the task", help="Custom task text for general VLM attention baseline")
     parser.add_argument("--save_uncertainty_maps", type=str, default="false", help="Save uncertainty maps")
     parser.add_argument("--output_dir", type=str, required=True, help="Base output directory (all tasks)")
     parser.add_argument("--bddl_dir", type=str, required=True, help="Directory containing BDDL files")
@@ -468,6 +470,7 @@ def main():
         'save_attention_maps': args.save_attention_maps,
         'save_vlm_attention_maps': args.save_vlm_attention_maps,
         'save_general_vlm_attention_maps': args.save_general_vlm_attention_maps,
+        'general_vlm_attention_task_text': args.general_vlm_attention_task_text,
         'save_uncertainty_maps': args.save_uncertainty_maps,
     }
     
