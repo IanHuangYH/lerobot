@@ -62,6 +62,9 @@ class EvalConfig:
     # Whether to save VLM prefix attention maps during evaluation (only for policies that support it, e.g., PI0.5)
     # This captures self-attention within the prefix (image ↔ language, image ↔ image, language ↔ language)
     save_vlm_attention_maps: bool = False
+    # Whether to save general VLM attention baseline with dummy task ("task: perform the task")
+    # This establishes baseline attention patterns for comparing against task-specific attention
+    save_general_vlm_attention_maps: bool = False
     # Whether to save uncertainty maps during evaluation (only for policies with RND models loaded)
     save_uncertainty_maps: bool = False
 

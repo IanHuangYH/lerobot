@@ -132,6 +132,7 @@ def run_evaluation_for_variant(
             f"--env.init_states={eval_config['use_init_states']}",
             f"--eval.save_attention_maps={eval_config['save_attention_maps']}",
             f"--eval.save_vlm_attention_maps={eval_config['save_vlm_attention_maps']}",
+            f"--eval.save_general_vlm_attention_maps={eval_config['save_general_vlm_attention_maps']}",
             f"--eval.save_uncertainty_maps={eval_config['save_uncertainty_maps']}",
         ]
         
@@ -396,6 +397,7 @@ def main():
     parser.add_argument("--use_init_states", type=str, default="true", help="Use init states")
     parser.add_argument("--save_attention_maps", type=str, default="true", help="Save attention maps")
     parser.add_argument("--save_vlm_attention_maps", type=str, default="false", help="Save VLM attention maps")
+    parser.add_argument("--save_general_vlm_attention_maps", type=str, default="false", help="Save general VLM attention baseline maps")
     parser.add_argument("--save_uncertainty_maps", type=str, default="false", help="Save uncertainty maps")
     parser.add_argument("--output_dir", type=str, required=True, help="Base output directory (all tasks)")
     parser.add_argument("--bddl_dir", type=str, required=True, help="Directory containing BDDL files")
@@ -465,6 +467,7 @@ def main():
         'use_init_states': args.use_init_states,
         'save_attention_maps': args.save_attention_maps,
         'save_vlm_attention_maps': args.save_vlm_attention_maps,
+        'save_general_vlm_attention_maps': args.save_general_vlm_attention_maps,
         'save_uncertainty_maps': args.save_uncertainty_maps,
     }
     

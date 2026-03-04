@@ -4,6 +4,27 @@ This module implements uncertainty prediction for the Pi0.5 Vision-Language-Acti
 
 ---
 
+## 📋 Table of Contents
+
+- [Overview](#-overview)
+- [Architecture](#-architecture)
+- [RND Design Options & Rationale](#-rnd-design-options--rationale)
+- [Data Structure](#-data-structure)
+- [Technical Details](#-technical-details)
+- [Attention Map Saving](#-attention-map-saving-complementary-feature)
+- [Quick Start: Complete Evaluation Pipeline](#-quick-start-complete-evaluation-pipeline)
+- [Implementation Phases](#-implementation-phases)
+  - [Phase 1: Data Collection](#phase-1-data-collection-for-rnd-training-)
+  - [Phase 2: RND Model Training](#phase-2-rnd-model-training-)
+  - [Phase 3: Inference Integration](#phase-3-inference-integration-)
+  - [Phase 4: Visualization](#phase-4-visualization-)
+- [File Structure](#-file-structure-after-implementation)
+- [References](#-references)
+- [Success Metrics](#-success-metrics)
+- [Next Steps](#-next-steps)
+
+---
+
 ## 📋 Overview
 **Goal**: Predict failure at runtime for Pi0.5 policy on LIBERO tasks by detecting out-of-distribution (OOD) visual observations.
 
@@ -491,7 +512,437 @@ nn.Sequential(
 
 ---
 
-## 🚀 Implementation Phases
+## � Attention Map Saving (Complementary Feature)
+
+The evaluation pipeline supports saving **attention weights** from the Pi0.5 policy alongside uncertainty predictions. This enables comprehensive analysis of model behavior by combining uncertainty quantification with attention pattern visualization.
+
+### **Two Types of Attention Maps**
+
+#### **1. Action Attention Maps** (`--eval.save_attention_maps`)
+
+**What It Captures**: Attention weights during **denoising steps** of action prediction
+
+**Purpose**: Understand how the model attends to visual vs. language tokens while predicting actions through the diffusion process
+
+**Key Characteristics**:
+- Collected during **each denoising iteration** (10 steps: t=1.0 → t≈0.0)
+- Captures **action tokens → image tokens** attention
+- Saves **last 2 transformer layers** (layers 16-17 out of 18) by default
+- Shows how attention evolves as action prediction refines
+
+**Data Structure**:
+```python
+# One file per episode: episode_00000_attention.pt (~2.8 GB)
+{
+    'rollout_steps': [  # One per action prediction (~145 total)
+        {
+            'rollout_step': 0,
+            'attention_maps': {
+                0: {  # First denoising step (t=1.0, pure noise)
+                    'time': 1.0,
+                    'prefix_len': 968,  # 768 (visual: 3×256) + 200 (language)
+                    'suffix_len': 50,   # 1 (time emb) + 49 (action tokens)
+                    'attention_weights': {
+                        16: torch.Tensor,  # (batch, heads, suffix_len, prefix+suffix)
+                        17: torch.Tensor   # (1, 8, 50, 1018)
+                    }
+                },
+                # ... (10 denoising steps total)
+                9: {  # Final step (t≈0.0, refined action)
+                    'time': 0.0,
+                    'attention_weights': {16: ..., 17: ...}
+                }
+            }
+        },
+        # ... (all rollout steps)
+    ],
+    'metadata': {'episode_index': 0, 'num_rollout_steps': 145, 'num_denoising_steps': 10}
+}
+```
+
+**Attention Weights Shape**:
+- `(batch=1, heads=8, query_len=50, key_len=1018)`
+- **Query (50)**: 1 time embedding + 49 action tokens
+- **Key (1018)**: 768 visual (3 cameras × 256) + 200 language + 50 suffix
+
+**Use Cases**:
+- Analyze how action prediction attends to different image regions
+- Track attention evolution through denoising process
+- Identify which visual features influence specific actions
+- Debug action prediction failures
+
+#### **2. VLM Attention Maps** (`--eval.save_vlm_attention_maps`)
+
+**What It Captures**: Attention weights during **prefix encoding** (vision-language understanding)
+
+**Purpose**: Understand how the model grounds language tokens (task description) to visual observations
+
+**Key Characteristics**:
+- Collected **once per action** during prefix encoding (no denoising iterations)
+- Captures **language tokens → image tokens** attention
+- Saves **all 18 transformer layers** (layers 0-17)
+- Shows how language concepts are visually grounded
+
+**Data Structure**:
+```python
+# One file per episode: episode_00000_vlm_attention.pt (~280 MB)
+{
+    'rollout_steps': [  # One per action prediction
+        {
+            'rollout_step': 0,
+            'prefix_attention': {
+                'prefix_len': 968,  # 768 (visual) + 200 (language)
+                'attention_weights': {
+                    0: torch.Tensor,   # (batch, heads, query_len, key_len)
+                    1: torch.Tensor,   # Early layers
+                    # ...
+                    17: torch.Tensor   # (1, 8, 968, 968) - final layer
+                }
+            }
+        },
+        # ... (all rollout steps)
+    ],
+    'metadata': {'episode_index': 0, 'num_rollout_steps': 145, 'num_layers': 18}
+}
+```
+
+**Attention Weights Shape**:
+- `(batch=1, heads=8, query_len=968, key_len=968)`
+- **Query/Key (968)**: 768 visual tokens + 200 language tokens
+- Extract language→visual attention: `attention[:, :, 768:968, 0:768]` → `(1, 8, 200, 768)`
+
+**Use Cases**:
+- Visualize which image regions correspond to task-relevant objects (e.g., "soup", "basket")
+- Analyze visual grounding quality across transformer layers
+- Identify head specialization (some heads focus on objects, others on spatial relations)
+- Debug language understanding failures
+
+#### **3. General VLM Attention Baseline Maps** (`--eval.save_general_vlm_attention_maps`)
+
+**What It Captures**: Baseline attention pattern using a **generic task instruction**
+
+**Purpose**: Establish reference attention pattern without task-specific guidance to measure how task instructions modulate visual attention
+
+**Key Characteristics**:
+- Uses **dummy task instruction**: `"task: perform the task"` (no specific object/action mentioned)
+- Collected **once per action** during prefix encoding (same frequency as VLM attention)
+- Uses **actual robot state** at each timestep (varies with robot pose)
+- Saves **all 18 transformer layers** (layers 0-17)
+- **Completely separate from task execution** - stored for analysis only, does not affect policy behavior
+- Shows attention pattern driven purely by visual features + robot state (without task semantics)
+
+**Data Structure**:
+```python
+# One file per episode: episode_00000_general_vlm_attention.pt (~280 MB)
+{
+    'rollout_steps': [  # One per action prediction
+        {
+            'rollout_step': 0,
+            'general_prefix_attention': {
+                'task_text': 'task: perform the task',  # Dummy task
+                'prefix_len': 968,  # 768 (visual) + 200 (language)
+                'attention_weights': {
+                    0: torch.Tensor,   # (batch, heads, query_len, key_len)
+                    1: torch.Tensor,   # Early layers
+                    # ...
+                    17: torch.Tensor   # (1, 8, 968, 968) - final layer
+                }
+            }
+        },
+        # ... (all rollout steps)
+    ],
+    'metadata': {
+        'episode_index': 0,
+        'num_rollout_steps': 145,
+        'num_layers': 18,
+        'general_task_used': 'task: perform the task'
+    }
+}
+```
+
+**Attention Weights Shape**:
+- Same as VLM attention: `(batch=1, heads=8, query_len=968, key_len=968)`
+- **Query/Key (968)**: 768 visual tokens + 200 language tokens (generic task)
+
+**Use Cases - Comparative Analysis**:
+
+1. **Attention Delta (Task-Specific vs. Baseline)**:
+   ```python
+   # Load both attention types
+   task_attention = load_vlm_attention(episode_path)
+   general_attention = load_general_vlm_attention(episode_path)
+   
+   # Compute difference
+   delta_attention = task_attention - general_attention
+   # Shows which regions gain/lose attention due to task instruction
+   # E.g., "soup" token: high delta on soup can region (task-relevant)
+   ```
+
+2. **Task Instruction Effectiveness**:
+   ```python
+   # Measure correlation between task-specific and generic attention
+   correlation = compute_correlation(task_attention, general_attention)
+   # Low correlation → Task instructions strongly modulate attention ✅
+   # High correlation → Model ignores task instructions ⚠️
+   ```
+
+3. **Universal Visual Features**:
+   ```python
+   # Average general attention across all episodes
+   universal_attention = general_attention.mean(over_all_episodes)
+   # Identifies features attended regardless of task:
+   #   - Gripper (always visible)
+   #   - Table edges (scene structure)
+   #   - Robot arm (proprioceptive grounding)
+   ```
+
+4. **Temporal Attention Evolution**:
+   ```python
+   # Compare how baseline attention changes with robot pose
+   for timestep in range(num_steps):
+       general_attn_t = general_attention[timestep]
+       # Shows attention changes driven by robot movement alone
+   ```
+
+**Analysis Examples**:
+
+**Example 1: High Task Modulation (Good)**
+- **Task Attention**: Strong focus on soup can for "pick up the soup"
+- **General Attention**: Distributed across all objects
+- **Delta**: Large difference on soup can region
+- **Conclusion**: Task instruction effectively guides attention ✅
+
+**Example 2: Low Task Modulation (Problematic)**
+- **Task Attention**: Similar pattern to general attention
+- **General Attention**: Already focusing on certain objects
+- **Delta**: Minimal difference
+- **Conclusion**: Model may not be using task instruction properly ⚠️
+
+**Example 3: Robot State Influence**
+- **General Attention (gripper open)**: Attention on graspable objects
+- **General Attention (gripper closed)**: Attention on placement targets
+- **Conclusion**: Robot state alone influences attention patterns
+
+**Storage & Performance**:
+- **Size per Episode**: ~280 MB (same as VLM attention)
+- **Size per 10 Episodes**: ~2.8 GB
+- **Performance Impact**: ~5-8% overhead (one prefix encoding per action, skips denoising)
+  - Previous implementation: +10-15% (ran full action sampling with 10 denoising steps)
+  - Current optimized: ~10x faster by skipping action expert completely
+- **Memory**: Minimal additional GPU memory (~same as VLM attention)
+
+**Important Notes**:
+- ⚠️ **Does NOT affect task execution**: General attention is computed separately and only saved for analysis
+- ✅ **Varies with scene/task**: Even with dummy task, visual observations differ per episode/timestep
+- ✅ **Robot state varies**: Uses actual robot state at each timestep (not fixed/zero state)
+- ✅ **Same collection frequency**: Once per action, synchronized with VLM attention
+
+**Technical Implementation**:
+- **Tokenization**: Uses the same PaliGemma tokenizer from the policy's preprocessor pipeline
+  - Dummy task text "task: perform the task" is tokenized at each timestep
+  - Tokenized dummy task replaces original task tokens in batch
+  - All other inputs (images, robot state) remain identical to actual execution
+- **Forward Pass**: Runs prefix encoding ONLY (no action expert/denoising)
+  - Uses `PI05Policy.collect_general_vlm_attention()` → `PI05Pytorch.encode_prefix_for_attention()`
+  - Captures VLM prefix self-attention without running action prediction
+  - ~10x faster than full action sampling (skips 10 denoising iterations)
+  - Stores separately in `general_vlm_attention_maps` (no interference with task attention)
+- **Collection Synchronization**: 
+  - Collected once per action prediction (every `n_action_steps = 10`)
+  - Independent check - does not rely on VLM attention being enabled
+  - Uses `action_was_predicted` flag to detect when action queue is refilled
+
+### **Storage Comparison**
+
+| Feature | Action Attention | VLM Attention | General VLM Attention | Uncertainty Maps |
+|---------|------------------|---------------|-----------------------|------------------|
+| **Flag** | `--eval.save_attention_maps=true` | `--eval.save_vlm_attention_maps=true` | `--eval.save_general_vlm_attention_maps=true` | `--eval.save_uncertainty_maps=true` |
+| **Collection Frequency** | 10× per action (denoising) | 1× per action (prefix) | 1× per action (prefix) | 1× per action |
+| **Layers Saved** | 2 (default: 16-17) | 18 (all layers) | 18 (all layers) | N/A (RND output) |
+| **Size per Episode** | ~2.8 GB | ~280 MB | ~280 MB | ~1-5 MB |
+| **Size per 10 Episodes** | ~28 GB | ~2.8 GB | ~2.8 GB | ~10-50 MB |
+| **Total (all 4 enabled)** | **~34 GB** per 10 episodes | | | |
+
+### **Combined Usage**
+
+**Enable all four maps simultaneously**:
+
+```bash
+# Full monitoring: uncertainty + all attention types
+./uncertainty_quantification/scripts/eval_libero_with_uncertainty.sh
+
+# Or with custom lerobot-eval flags:
+lerobot-eval \
+  --env.type=libero \
+  --env.task=libero_object \
+  --eval.n_episodes=10 \
+  --policy.path=lerobot/pi05_libero_finetuned \
+  --output_dir=eval_logs/full_analysis \
+  --policy.compile_model=false \
+  --eval.save_attention_maps=true \               # Action attention (denoising)
+  --eval.save_vlm_attention_maps=true \           # VLM attention (prefix)
+  --eval.save_general_vlm_attention_maps=true \   # General VLM attention (baseline)
+  --eval.save_uncertainty_maps=true               # RND uncertainty
+```
+
+**Output Structure**:
+
+```
+eval_logs/full_analysis/
+├── videos/
+│   └── libero_object_0/
+│       ├── eval_episode_00000.mp4
+│       └── ...
+├── attention/                              # Action attention (denoising)
+│   └── libero_object_0/
+│       ├── episode_00000_attention.pt      (~2.8 GB)
+│       └── ...
+├── vlm_attention/                          # VLM attention (prefix)
+│   └── libero_object_0/
+│       ├── episode_00000_vlm_attention.pt  (~280 MB)
+│       └── ...
+├── general_vlm_attention/                  # General VLM attention (baseline)
+│   └── libero_object_0/
+│       ├── episode_00000_general_vlm_attention.pt  (~280 MB)
+│       └── ...
+└── uncertainty/                            # RND uncertainty
+    └── libero_object_0/
+        ├── episode_00000_uncertainty.pt    (~1-5 MB)
+        ├── verification/                   # Visualization outputs
+        │   └── episode_00000/
+        └── timelines/
+```
+
+### **Visualization Integration**
+
+**VLM Attention Visualization** (see `pi_setting/eval/README_attention_saving.md` for details):
+
+```bash
+# Identify task-relevant tokens (e.g., "soup", "basket")
+bash pi_setting/eval/run_demo_specific_token_attention.sh
+
+# Visualize VLM attention for specific tokens and layers
+bash pi_setting/eval/run_visualize_vlm_attention.sh
+
+# Create attention grids (all layers × all heads)
+bash pi_setting/eval/create_attention_grid.sh
+```
+
+**Uncertainty + Attention Analysis Workflow**:
+
+```bash
+# Step 1: Run evaluation with all maps enabled
+./uncertainty_quantification/scripts/eval_libero_with_uncertainty.sh
+
+# Step 2: Visualize uncertainty heatmaps
+./uncertainty_quantification/scripts/run_verify_uncertainty_video_alignment.sh
+
+# Step 3: Visualize VLM attention for task-relevant tokens
+bash pi_setting/eval/run_visualize_vlm_attention.sh
+
+# Step 4: Compare attention patterns
+# - Task-specific vs. general (baseline) attention
+# - High-uncertainty regions vs. weak attention?
+# - Does model attend to correct objects even with high uncertainty?
+# - Are failures correlated with incorrect attention patterns?
+# - Does task instruction effectively modulate attention?
+```
+
+**Advanced Analysis with General Attention**:
+
+```python
+# Example: Analyze task instruction effectiveness
+import torch
+
+# Load all attention types for an episode
+task_attn = torch.load('vlm_attention/libero_object_0/episode_00000_vlm_attention.pt')
+general_attn = torch.load('general_vlm_attention/libero_object_0/episode_00000_general_vlm_attention.pt')
+uncertainty = torch.load('uncertainty/libero_object_0/episode_00000_uncertainty.pt')
+
+# Extract attention for "soup" token (e.g., token 774) at timestep 50
+step_idx = 5  # Rollout step (step * n_action_steps = timestep 50)
+layer = 17    # Last layer
+
+# Task-specific attention to visual tokens
+task_soup_attn = task_attn['rollout_steps'][step_idx]['prefix_attention']['attention_weights'][layer]
+task_soup_to_visual = task_soup_attn[0, :, 774, :768]  # (8, 768) - 8 heads, 768 visual tokens
+
+# General attention (no task guidance)
+general_soup_attn = general_attn['rollout_steps'][step_idx]['general_prefix_attention']['attention_weights'][layer]
+general_soup_to_visual = general_soup_attn[0, :, 774, :768]  # Same token position
+
+# Compute delta (task effect)
+attention_delta = task_soup_to_visual - general_soup_to_visual  # (8, 768)
+
+# Large positive delta → Task instruction increases attention to specific regions
+# Near zero delta → Task instruction has minimal effect
+# Negative delta → Task instruction suppresses attention (rare but possible)
+
+# Correlate with uncertainty
+uncertainty_step = uncertainty['rollout_steps'][step_idx]['uncertainty']
+print(f"Overall uncertainty: {uncertainty_step['overall']}")
+print(f"Attention delta magnitude: {attention_delta.abs().mean()}")
+```
+
+### **Critical Implementation Notes**
+
+**1. Compilation Must Be Disabled**
+
+`torch.compile()` optimizes away unused return values. Since attention weights aren't used in the forward pass, compilation removes them.
+
+```bash
+# REQUIRED when saving attention maps
+--policy.compile_model=false
+```
+
+**2. Attention Collection Fix** (✅ Resolved)
+
+**Problem**: Attention weights were `None` during inference because the model's suffix-only forward pass didn't request them.
+
+**Solution**: Modified `PaliGemmaWithExpertModel.forward()` to use `output_attentions=True` in the transformers call during the suffix-only branch (denoising).
+
+**3. Storage Management**
+
+For extensive evaluations:
+- **Action attention**: Consider saving only layer 17 (last layer) to reduce size by 50%
+- **VLM attention**: Already efficient (~10× smaller than action attention)
+- **Uncertainty**: Minimal storage impact (~1-5 MB per episode)
+
+**Configurable Attention Layers** (in `modeling_pi05.py`):
+```python
+def get_attention_maps(self, last_n_layers: int = 2):  # Change this number
+    """Get attention maps from last N layers."""
+    # last_n_layers=1  → ~1.5 GB per episode (layer 17 only)
+    # last_n_layers=2  → ~2.8 GB per episode (layers 16-17)
+    # last_n_layers=18 → ~27 GB per episode (all layers)
+```
+
+### **Analysis Examples**
+
+**Example 1: Failure with High Uncertainty + Incorrect Attention**
+- **Uncertainty**: High scores on wrist camera (0.35)
+- **VLM Attention**: Language token "soup" attends to wrong object
+- **Conclusion**: Model misidentified target object → high uncertainty → failure
+
+**Example 2: Success with High Uncertainty + Correct Attention**
+- **Uncertainty**: High scores but task succeeds
+- **VLM Attention**: Correct object grounding despite novel appearance
+- **Conclusion**: VLA generalizes well even with OOD observations
+
+**Example 3: Failure with Low Uncertainty + Correct Attention**
+- **Uncertainty**: Low scores (confident)
+- **VLM Attention**: Correct object identification
+- **Conclusion**: Failure likely due to control/dynamics (not perception)
+
+### **Reference Documentation**
+
+- **Full VLM Attention Guide**: `pi_setting/eval/README_attention_saving.md`
+- **Uncertainty Visualization**: `uncertainty_quantification/PHASE4_SUMMARY.md`
+- **Implementation Details**: `uncertainty_quantification/PHASE3_SUMMARY.md`
+
+---
+
+## �🚀 Implementation Phases
 
 ### **Phase 1: Data Collection for RND Training** ✅
 
@@ -746,70 +1197,196 @@ tensorboard --logdir uncertainty_quantification/rnd_save_models/spatial_agentvie
 
 ### **Phase 3: Inference Integration** ✅
 
+**Status**: Complete (February 2026)
+
 **Goal**: Integrate RND uncertainty prediction into `lerobot_eval.py`
 
 **Steps**:
 1. ✅ Modify `modeling_pi05.py`:
-   - Add `enable_uncertainty_prediction()` method
-   - Store latest embeddings during `embed_prefix()`
-   - Add `get_uncertainty_scores()` method
+   - Add `enable_uncertainty_prediction()` method to inject RND models
+   - Store latest embeddings during `embed_prefix()` in `latest_image_embeddings` dict
+   - Add `get_uncertainty_scores()` method for batched RND inference
+   - Add `uncertainty_enabled` flag to track RND model availability
 2. ✅ Modify `lerobot_eval.py`:
-   - Add `--eval.save_uncertainty_maps` flag
-   - Load appropriate RND models based on task type
-   - Call RND inference after each action prediction
-   - Save uncertainty scores per rollout step
+   - Add `--eval.save_uncertainty_maps` flag to `EvalConfig`
+   - Load appropriate RND models via `load_rnd_models_for_task()` based on task type
+   - Inject models into policy with `policy.enable_uncertainty_prediction(rnd_models)`
+   - Call `policy.get_uncertainty_scores()` after each action prediction
+   - Save batched uncertainty scores during rollout
+   - Extract per-episode data with `extract_episode_uncertainty()`
 3. ✅ Create `uncertainty_quantification/inference/` module:
-   - `load_rnd_models_for_task()`: Load RND checkpoints
-   - `compute_uncertainty_scores()`: Compute uncertainty from embeddings
-   - `extract_episode_uncertainty()`: Extract per-episode data from batched rollout
-4. ✅ Implement batched token processing for efficiency
+   - `load_rnd_models_for_task()`: Load RND checkpoints for task type
+   - `extract_task_type_from_env()`: Map LIBERO task names to RND task types
+   - `extract_episode_uncertainty()`: Extract per-episode data from batched rollout results
+4. ✅ Implement batched token processing for efficiency (~10-20ms per timestep)
+
+**Task Type Mapping**:
+```python
+# Maps LIBERO environment names to RND model task types
+libero_spatial      → spatial
+libero_object       → object
+libero_goal         → goal
+libero_10           → long
+libero_unseen_object → long  # Uses long-horizon models
+```
 
 **Uncertainty Computation**:
 ```python
 # In modeling_pi05.py
-def get_uncertainty_scores(self):
+def get_uncertainty_scores(self, return_spatial_maps=True):
+    """Compute uncertainty from latest image embeddings using RND models."""
+    if not self.uncertainty_enabled:
+        return None
+    
     uncertainties = {}
     for camera in ['agentview', 'wrist']:
-        tokens = self.latest_embeddings[camera]  # (256, 2048)
-        rnd = self.rnd_models[camera]
+        tokens = self.latest_image_embeddings[camera]  # (batch, 256, 2048)
+        rnd_model = self.rnd_models[camera]
         
-        # Batch forward pass
-        targets = rnd.target_network(tokens)  # (256, 512)
-        preds = rnd.predictor_network(tokens)  # (256, 512)
-        token_uncertainties = F.mse_loss(preds, targets, reduction='none').mean(dim=1)  # (256,)
+        # Batched forward pass through RND
+        batch_size = tokens.shape[0]
+        flat_tokens = tokens.view(-1, 2048)  # (batch*256, 2048)
         
-        uncertainties[camera] = token_uncertainties.mean().item()  # Overall score
-        uncertainties[f'{camera}_spatial'] = token_uncertainties.view(16, 16)  # Spatial map
+        with torch.no_grad():
+            target_features = rnd_model.target_network(flat_tokens)  # (batch*256, 512)
+            pred_features = rnd_model.predictor_network(flat_tokens)  # (batch*256, 512)
+            token_errors = F.mse_loss(pred_features, target_features, reduction='none').mean(dim=1)
+        
+        token_errors = token_errors.view(batch_size, 256)  # (batch, 256)
+        
+        # Overall score per episode
+        uncertainties[camera] = token_errors.mean(dim=1)  # (batch,)
+        
+        # Spatial heatmap (16x16) per episode (optional)
+        if return_spatial_maps:
+            uncertainties[f'{camera}_spatial'] = token_errors.view(batch_size, 16, 16)
     
+    # Combined uncertainty score
     uncertainties['overall'] = (uncertainties['agentview'] + uncertainties['wrist']) / 2
     return uncertainties
 ```
 
-**Output**:
-- `eval_logs/{eval_name}/uncertainty/{task}/episode_XXXXX_uncertainty.pt`
+**RND Model Loading**:
+```python
+# In uncertainty_quantification/inference/rnd_inference.py
+def load_rnd_models_for_task(task_type, device='cuda'):
+    """
+    Load trained RND models for a specific task type.
+    
+    Args:
+        task_type: One of ['spatial', 'object', 'goal', 'long']
+        device: Device to load models on
+    
+    Returns:
+        dict: {'agentview': RND_OE, 'wrist': RND_OE}
+    
+    Raises:
+        RuntimeError: If models not found (strict failure mode)
+    """
+    models = {}
+    for camera in ['agentview', 'wrist']:
+        ckpt_path = f"uncertainty_quantification/rnd_save_models/{task_type}_{camera}/best_model.ckpt"
+        
+        if not os.path.exists(ckpt_path):
+            raise RuntimeError(f"RND model not found: {ckpt_path}")
+        
+        checkpoint = torch.load(ckpt_path, map_location=device)
+        model = RND_OE(
+            obs_embedding_dim=checkpoint['model_config']['obs_embedding_dim'],
+            output_size=checkpoint['model_config']['output_size']
+        )
+        model.load_state_dict(checkpoint['state_dict'])
+        model.to(device).eval()
+        
+        models[camera] = model
+    
+    return models
+```
 
-**Files Modified**:
-- `lerobot/src/lerobot/policies/pi05/modeling_pi05.py`
-- `lerobot/src/lerobot/scripts/lerobot_eval.py`
-- `lerobot/src/lerobot/configs/default.py` (add `save_uncertainty_maps` flag)
+**Output Format**:
+```python
+# Saved to: eval_logs/{eval_name}/uncertainty/{task}/episode_XXXXX_uncertainty.pt
+{
+    'episode_index': 0,
+    'metadata': {
+        'num_steps': 145,  # Number of rollout steps
+        'task_type': 'object',
+        'cameras': ['agentview', 'wrist']
+    },
+    'rollout_steps': [  # One entry per action prediction
+        {
+            'step': 0,  # Rollout step index (0, 10, 20, ... for n_action_steps=10)
+            'uncertainty': {
+                'overall': 0.0234,  # Mean of both cameras
+                'agentview': 0.0250,  # Camera-specific score
+                'wrist': 0.0218,
+                'spatial_maps': {  # Optional: for visualization
+                    'agentview': torch.Tensor,  # (16, 16) spatial heatmap
+                    'wrist': torch.Tensor       # (16, 16) spatial heatmap
+                }
+            }
+        },
+        # ... (145 steps total for typical episode)
+    ]
+}
+```
 
-**Files Created**:
-- `uncertainty_quantification/inference/__init__.py`
-- `uncertainty_quantification/inference/rnd_inference.py`
-- `uncertainty_quantification/test/test_uncertainty_inference.sh`
+**Batch Processing Architecture**:
+- During rollout: Collect batched uncertainty data `(batch_size, ...)`
+- After rollout: Extract per-episode using `extract_episode_uncertainty(batch_idx)`
+- This separates batch processing (eval script) from per-episode data structure (inference module)
+
+**Files Modified**: ✅
+- `src/lerobot/policies/pi05/modeling_pi05.py` - RND integration points
+- `src/lerobot/scripts/lerobot_eval.py` - Uncertainty collection pipeline
+- `src/lerobot/configs/default.py` - Add `save_uncertainty_maps: bool = False` flag
+
+**Files Created**: ✅
+- `uncertainty_quantification/inference/__init__.py` - Package initialization
+- `uncertainty_quantification/inference/rnd_inference.py` - RND loading & extraction utilities
+- `uncertainty_quantification/test/test_uncertainty_inference.sh` - Quick test (2 episodes)
+- `uncertainty_quantification/scripts/eval_libero_with_uncertainty.sh` - Full evaluation script
+- `uncertainty_quantification/PHASE3_SUMMARY.md` - Complete implementation guide
 
 ---
 
 ### **Phase 4: Visualization** ✅
 
-**Goal**: Visualize uncertainty heatmaps overlaid on rollout videos
+**Status**: Complete (February 2026)
 
-**Implementation**: Complete - see `PHASE4_SUMMARY.md` for details
+**Goal**: Visualize uncertainty heatmaps overlaid on rollout videos and create timeline analysis tools
 
 **Key Features**:
-1. **2x2 Grid Snapshots**: Overlays + pure heatmaps with uncertainty scores
-2. **Timeline Plots**: Overall, camera comparison, multi-episode
-3. **Batch Processing**: Automate visualization for many episodes
+1. ✅ **2x2 Grid Snapshots**: Uncertainty overlays + pure heatmaps with scores and colorbar
+2. ✅ **Timeline Plots**: Overall, camera comparison, multi-episode comparison
+3. ✅ **Batch Processing**: Automate visualization for many episodes and timesteps
+4. ✅ **Configurable Colormaps**: Support different visualization styles (viridis, jet, hot, etc.)
+5. ✅ **Transparency Control**: Adjustable overlay alpha for better visual clarity
+
+**Visualization Tools**:
+
+#### **1. Video-Aligned Verification** (`verify_uncertainty_video_alignment.py`)
+
+Creates 2x2 grid visualizations showing uncertainty overlaid on actual video frames:
+
+```
+┌─────────────────────────┬─────────────────────────┬──────┐
+│   Agentview + Overlay   │   Wrist + Overlay       │      │
+│   Score: 0.1450         │   Score: 0.0890         │ C    │
+├─────────────────────────┼─────────────────────────┤ O    │
+│   Agentview Heatmap     │   Wrist Heatmap         │ L    │
+│   (Pure)                │   (Pure)                │ O    │
+│                         │                         │ R    │
+└─────────────────────────┴─────────────────────────┴──────┘
+       Overall: 0.1170 | Timestep: 50
+```
+
+**Features**:
+- Splits concatenated video frames (agentview left, wrist right)
+- Overlays uncertainty heatmaps with configurable transparency
+- Displays per-camera and overall scores
+- Adds colorbar showing uncertainty scale
+- Processes multiple timesteps in parallel
 
 **Usage**:
 ```bash
@@ -823,58 +1400,296 @@ python -m uncertainty_quantification.visualization.verify_uncertainty_video_alig
   --alpha 0.55 \
   --episode_id 3
 
-# Batch verification (all episodes)
+# Batch verification (all episodes) - automated script
 ./uncertainty_quantification/scripts/run_verify_uncertainty_video_alignment.sh
+```
 
-# Timeline visualization (single episode)
-python -m uncertainty_quantification.visualization.visualize_uncertainty_timeline \
-  --uncertainty_paths eval_logs/with_uncertainty/uncertainty/libero_object_0/episode_00003_uncertainty.pt \
-  --output_dir eval_logs/with_uncertainty/uncertainty/libero_object_0/timelines \
-  --plot_type all
-
-# Timeline visualization (compare multiple episodes)
-python -m uncertainty_quantification.visualization.visualize_uncertainty_timeline \
-  --uncertainty_paths \
-      eval_logs/with_uncertainty/uncertainty/libero_object_0/episode_00000_uncertainty.pt \
-      eval_logs/with_uncertainty/uncertainty/libero_object_0/episode_00001_uncertainty.pt \
-  --output_dir eval_logs/with_uncertainty/uncertainty/libero_object_0/timelines \
-  --episode_names "Success-1" "Failed-1" \
-  --compare_episodes \
-  --plot_type all
+**Configuration** (edit `run_verify_uncertainty_video_alignment.sh`):
+```bash
+EVAL_FOLDER="with_uncertainty"    # Evaluation run name
+EVAL_SCENE_INDEX=0                # Max task ID (0-9)
+EVAL_TASK_AMOUNT=9                # Max episode per task
+TIMESTEPS="0 10 20 30 50 100"    # Which timesteps to visualize
+COLORMAP="viridis"                # Heatmap colormap (viridis/jet/hot/cool)
+ALPHA=0.55                        # Overlay transparency (0-1)
 ```
 
 **Output Structure**:
 ```
 eval_logs/{eval_name}/uncertainty/{task}/
-├── verification/episode_XXXXX/              # 2x2 grid snapshots
-│   ├── timestep_000_grid.png               # Overlays + heatmaps
-│   ├── timestep_010_grid.png
-│   └── ...
-└── timelines/                               # Timeline plots
-    ├── episode_00000_uncertainty_timeline.png
-    ├── episode_00000_uncertainty_camera_comparison.png
-    ├── multi_episode_comparison.png
+└── verification/
+    ├── episode_00000/
+    │   ├── timestep_000_grid.png  # 2x2 grid with overlays + heatmaps
+    │   ├── timestep_010_grid.png
+    │   ├── timestep_020_grid.png
+    │   └── ...
+    ├── episode_00001/
+    │   └── ...
     └── ...
 ```
 
-**Visualization Format** (2x2 Grid):
-```
-┌─────────────────────────┬─────────────────────────┐
-│   Agentview + Overlay   │   Wrist + Overlay       │
-│   Score: 0.1450         │   Score: 0.0890         │
-├─────────────────────────┼─────────────────────────┤
-│   Agentview Heatmap     │   Wrist Heatmap         │
-│   (Pure)                │   (Pure)                │
-└─────────────────────────┴─────────────────────────┘
-       Overall: 0.1170 | Timestep: 50
+#### **2. Timeline Analysis** (`visualize_uncertainty_timeline.py`)
+
+Creates line plots showing uncertainty evolution over episode duration:
+
+**Plot Types**:
+
+a. **Overall Timeline**: Single line showing overall uncertainty vs timestep
+   - Mean uncertainty value displayed in legend
+   - Maximum uncertainty value and location marked
+   - Grid and axis labels
+
+b. **Camera Comparison**: Three lines (overall, agentview, wrist)
+   - Compare uncertainty contributions from different viewpoints
+   - Statistics (mean, max) for each camera in legend
+   - Color-coded: overall (blue), agentview (orange), wrist (green)
+
+c. **Multi-Episode Comparison**: Overlay multiple episodes
+   - Top subplot: Overall uncertainty for all episodes
+   - Bottom subplot: Per-camera breakdown (optional)
+   - Useful for comparing successful vs failed episodes
+   - Color-coded by episode with custom names
+
+**Usage**:
+```bash
+# Single episode - all plot types
+python -m uncertainty_quantification.visualization.visualize_uncertainty_timeline \
+  --uncertainty_paths eval_logs/with_uncertainty/uncertainty/libero_object_0/episode_00003_uncertainty.pt \
+  --output_dir eval_logs/with_uncertainty/uncertainty/libero_object_0/timelines \
+  --plot_type all
+
+# Compare multiple episodes (e.g., success vs failure)
+python -m uncertainty_quantification.visualization.visualize_uncertainty_timeline \
+  --uncertainty_paths \
+      eval_logs/with_uncertainty/uncertainty/libero_object_0/episode_00000_uncertainty.pt \
+      eval_logs/with_uncertainty/uncertainty/libero_object_0/episode_00005_uncertainty.pt \
+      eval_logs/with_uncertainty/uncertainty/libero_object_0/episode_00007_uncertainty.pt \
+  --output_dir eval_logs/with_uncertainty/uncertainty/libero_object_0/timelines \
+  --episode_names "Success-1" "Failed-1" "Failed-2" \
+  --compare_episodes \
+  --plot_type all
+
+# Only overall timeline (fastest)
+python -m uncertainty_quantification.visualization.visualize_uncertainty_timeline \
+  --uncertainty_paths eval_logs/.../episode_00003_uncertainty.pt \
+  --output_dir eval_logs/.../timelines \
+  --plot_type overall
 ```
 
+**Output Files**:
+```
+eval_logs/{eval_name}/uncertainty/{task}/timelines/
+├── episode_00000_uncertainty_timeline.png              # Overall only
+├── episode_00000_uncertainty_camera_comparison.png    # Per-camera breakdown
+├── episode_00001_uncertainty_timeline.png
+├── episode_00001_uncertainty_camera_comparison.png
+└── multi_episode_comparison.png                        # Compare episodes
+```
+
+**Command-Line Options**:
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--uncertainty_paths` | str+ | *required* | Paths to episode uncertainty .pt files |
+| `--output_dir` | str | *required* | Output directory for plots |
+| `--plot_type` | str | `all` | Plot types: `overall`, `camera`, `all` |
+| `--episode_names` | str+ | `None` | Custom names for episodes (for comparison plot) |
+| `--compare_episodes` | flag | `False` | Create multi-episode comparison plot |
+
+**Visualization Analysis Workflow**:
+
+```bash
+# Step 1: Run evaluation with uncertainty enabled
+./uncertainty_quantification/scripts/eval_libero_with_uncertainty.sh
+
+# Step 2: Generate 2x2 grid snapshots for key timesteps
+./uncertainty_quantification/scripts/run_verify_uncertainty_video_alignment.sh
+
+# Step 3: Create timeline plots for all episodes
+for ep in {0..9}; do
+  python -m uncertainty_quantification.visualization.visualize_uncertainty_timeline \
+    --uncertainty_paths eval_logs/with_uncertainty/uncertainty/libero_object_0/episode_$(printf "%05d" $ep)_uncertainty.pt \
+    --output_dir eval_logs/with_uncertainty/uncertainty/libero_object_0/timelines \
+    --plot_type all
+done
+
+# Step 4: Compare successful vs failed episodes
+python -m uncertainty_quantification.visualization.visualize_uncertainty_timeline \
+  --uncertainty_paths \
+      eval_logs/.../episode_00000_uncertainty.pt \  # Success
+      eval_logs/.../episode_00005_uncertainty.pt \  # Failure
+  --episode_names "Success" "Failure" \
+  --compare_episodes --plot_type all
+```
+
+**Analysis Questions to Answer**:
+1. **Does uncertainty increase before failures?** → Check timeline peaks near failure points
+2. **Which camera detects anomalies first?** → Compare agentview vs wrist timelines
+3. **Are failed episodes consistently higher?** → Compare multi-episode plots
+4. **Do spatial heatmaps align with failure causes?** → Check 2x2 grid overlays
+
 **Files Created**: ✅
-- `uncertainty_quantification/visualization/__init__.py`
-- `uncertainty_quantification/visualization/verify_uncertainty_video_alignment.py`
-- `uncertainty_quantification/visualization/visualize_uncertainty_timeline.py`
-- `uncertainty_quantification/scripts/run_verify_uncertainty_video_alignment.sh`
+- `uncertainty_quantification/visualization/__init__.py` - Package initialization
+- `uncertainty_quantification/visualization/verify_uncertainty_video_alignment.py` - 2x2 grid overlays
+  - Functions: `load_uncertainty_data()`, `extract_spatial_map()`, `load_video_frame()`, 
+    `split_concatenated_frame()`, `create_uncertainty_heatmap()`, `overlay_heatmap_on_image()`,
+    `add_text_to_image()`, `create_visualization_grid()`
+- `uncertainty_quantification/visualization/visualize_uncertainty_timeline.py` - Timeline plots
+  - Functions: `load_episode_uncertainties()`, `plot_uncertainty_timeline()`, 
+    `plot_camera_comparison()`, `plot_multi_episode_comparison()`
+- `uncertainty_quantification/scripts/run_verify_uncertainty_video_alignment.sh` - Batch processor
 - `uncertainty_quantification/PHASE4_SUMMARY.md` - Complete implementation guide
+
+---
+
+## 🚀 Quick Start: Complete Evaluation Pipeline
+
+### **Minimal Test (2 Episodes)**
+
+Quick verification that everything is working:
+
+```bash
+cd /workspace/lerobot
+
+# Test uncertainty inference only (fastest)
+./uncertainty_quantification/test/test_uncertainty_inference.sh
+
+# Expected output:
+# - Videos: eval_logs/test_uncertainty/videos/
+# - Uncertainty: eval_logs/test_uncertainty/uncertainty/
+# - 2 episodes processed in ~5-10 minutes
+```
+
+### **Full Evaluation with All Maps**
+
+Run complete evaluation with uncertainty + VLM attention + action attention:
+
+```bash
+# Use the provided evaluation script
+./uncertainty_quantification/scripts/eval_libero_with_uncertainty.sh
+
+# This script enables:
+# ✅ Uncertainty prediction (RND models)
+# ✅ VLM attention maps (prefix encoding)
+# ✅ General VLM attention maps (baseline)
+# ✅ Action attention maps (denoising steps)
+# ✅ Video recording
+
+# Configuration (edit the script to customize):
+OUTPUT_DIR="uncertainty_quantification/eval_log/uncertainty_long"
+TASK_SUITE=libero_object          # or libero_spatial, libero_goal, libero_10
+EPISODE=2                          # Number of episodes per task
+TASK_IDS='[0,1,2,3,4,5,6,7,8,9]'  # Which task IDs to evaluate (0-9)
+POLICY_GPU_ID=0                    # Which GPU to use
+```
+
+**Expected output structure**:
+
+```
+uncertainty_quantification/eval_log/uncertainty_long/
+├── eval_info.json                          # Success rates and metrics
+├── videos/
+│   ├── libero_object_0/
+│   │   ├── eval_episode_00000.mp4
+│   │   └── eval_episode_00001.mp4
+│   ├── libero_object_1/
+│   └── ... (10 tasks)
+├── attention/                              # Action attention (~2.8 GB per episode)
+│   ├── libero_object_0/
+│   │   ├── episode_00000_attention.pt
+│   │   └── episode_00001_attention.pt
+│   └── ...
+├── vlm_attention/                          # VLM attention (~280 MB per episode)
+│   ├── libero_object_0/
+│   │   ├── episode_00000_vlm_attention.pt
+│   │   └── episode_00001_vlm_attention.pt
+│   └── ...
+├── general_vlm_attention/                  # General VLM attention baseline (~280 MB per episode)
+│   ├── libero_object_0/
+│   │   ├── episode_00000_general_vlm_attention.pt
+│   │   └── episode_00001_general_vlm_attention.pt
+│   └── ...
+└── uncertainty/                            # Uncertainty maps (~1-5 MB per episode)
+    ├── libero_object_0/
+    │   ├── episode_00000_uncertainty.pt
+    │   └── episode_00001_uncertainty.pt
+    └── ...
+```
+
+**Storage requirements** (per 10 tasks, 2 episodes each = 20 episodes):
+- Videos: ~500 MB
+- Action attention: ~56 GB (20 × 2.8 GB)
+- VLM attention: ~5.6 GB (20 × 280 MB)
+- General VLM attention: ~5.6 GB (20 × 280 MB)
+- Uncertainty maps: ~100 MB (20 × 5 MB)
+- **Total: ~68 GB** (with all maps enabled)
+
+### **Visualization Workflow**
+
+After evaluation completes:
+
+```bash
+# 1. Visualize uncertainty heatmaps (2x2 grids + timelines)
+./uncertainty_quantification/scripts/run_verify_uncertainty_video_alignment.sh
+
+# Output: verification/ and timelines/ subdirectories in uncertainty/
+
+# 2. Visualize VLM attention for task-relevant tokens
+cd pi_setting/eval
+
+# Identify interesting tokens (e.g., "soup", "basket")
+bash run_demo_specific_token_attention.sh
+
+# Generate VLM attention overlays
+bash run_visualize_vlm_attention.sh
+
+# Create attention grids (all layers × all heads)
+bash create_attention_grid.sh
+
+# Output: viz_episode_XXXXX/ in vlm_attention/
+```
+
+### **Custom Evaluation**
+
+For custom settings, use `lerobot-eval` directly:
+
+```bash
+lerobot-eval \
+  --env.type=libero \
+  --env.task=libero_spatial \
+  --eval.batch_size=1 \
+  --eval.n_episodes=5 \
+  --policy.path=lerobot/pi05_libero_finetuned \
+  --policy.n_action_steps=10 \
+  --policy.device=cuda:0 \
+  --output_dir=eval_logs/custom_run \
+  --env.max_parallel_tasks=1 \
+  --env.task_ids='[0,1,2,3,4]' \
+  --env.init_states=true \
+  --policy.compile_model=false \
+  --eval.save_attention_maps=true \               # Optional: action attention
+  --eval.save_vlm_attention_maps=true \           # Optional: VLM attention
+  --eval.save_general_vlm_attention_maps=true \   # Optional: general VLM attention (baseline)
+  --eval.save_uncertainty_maps=true               # Optional: uncertainty
+```
+
+**Flag combinations**:
+
+| Use Case | Flags to Enable | Total Size (10 eps) | Speed Impact |
+|----------|----------------|---------------------|--------------|
+| **Minimal** | None | ~250 MB (videos only) | Fastest |
+| **Uncertainty only** | `save_uncertainty_maps` | ~300 MB | +5-10% |
+| **VLM attention only** | `save_vlm_attention_maps` | ~3 GB | +10-15% |
+| **VLM + General VLM** | `save_vlm_attention_maps` + `save_general_vlm_attention_maps` | ~6 GB | +20-25% |
+| **Action attention only** | `save_attention_maps` | ~28 GB | +20-30% |
+| **All attention maps** | All attention flags (action + VLM + general VLM) | ~34 GB | +40-50% |
+| **Complete analysis** | All four flags | ~34 GB | +40-50% |
+
+**Memory requirements**:
+- **Minimal**: ~4 GB GPU
+- **With uncertainty**: ~5 GB GPU
+- **With VLM attentions**: ~6 GB GPU
+- **With all maps**: ~8-10 GB GPU
 
 ---
 
@@ -1029,16 +1844,24 @@ rnd:
    - ✅ Modify `lerobot_eval.py` for uncertainty saving
    - ✅ Add `save_uncertainty_maps` config flag
    - ✅ Implement RND inference utilities
+   - ✅ Create `eval_libero_with_uncertainty.sh` script
 7. ✅ **Phase 4**: Create visualization tools
    - ✅ 2x2 grid snapshot visualization
    - ✅ Timeline plotting (overall + camera comparison)
    - ✅ Batch processing script
-8. ⏭️ **Phase 5** (Future): Statistical analysis and threshold optimization
+8. ✅ **Attention Map Integration**: Support VLM and action attention alongside uncertainty
+   - ✅ Document attention saving capabilities
+   - ✅ Integrate with `eval_libero_with_uncertainty.sh`
+   - ✅ Support combined analysis workflows
+9. ⏭️ **Phase 5** (Future): Statistical analysis and threshold optimization
    - Correlation between uncertainty and task success
    - ROC curves for failure prediction
    - Optimal threshold determination
+   - Cross-analysis of uncertainty and attention patterns
 
 ---
 
-**Last Updated**: February 24, 2026  
-**Status**: Phases 1-4 Complete ✅ | Phase 5 Deferred ⏭️
+**Last Updated**: March 4, 2026  
+**Status**: Phases 1-4 Complete ✅ | Attention Integration Complete ✅ | Phase 5 Deferred ⏭️
+
+**Complete Pipeline**: Uncertainty Quantification + VLM Attention + Action Attention + Comprehensive Visualization

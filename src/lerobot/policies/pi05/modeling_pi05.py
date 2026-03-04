@@ -635,6 +635,10 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         # VLM attention map saving (for prefix self-attention)
         self.save_vlm_attention_maps = False
         self.vlm_attention_maps = {}
+        
+        # General VLM attention map saving (baseline with dummy task)
+        self.save_general_vlm_attention_maps = False
+        self.general_vlm_attention_maps = {}
 
         # Compile model if requested
         if config.compile_model:
@@ -790,6 +794,121 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
     def clear_vlm_attention_maps(self):
         """Clear stored VLM attention maps to free memory."""
         self.vlm_attention_maps = {}
+    
+    def enable_general_vlm_attention_map_saving(self):
+        """Enable saving general VLM prefix attention maps with dummy task during inference.
+        
+        This captures baseline attention patterns using a generic task instruction
+        ("task: perform the task") to establish reference attention without task-specific guidance.
+        Used for comparing against task-specific attention to measure task instruction effectiveness.
+        
+        WARNING: This may cause issues with torch.compile(). If you get errors about
+        None attention weights, you may need to disable compilation or reload the model.
+        """
+        self.save_general_vlm_attention_maps = True
+        self.general_vlm_attention_maps = {}
+    
+    def disable_general_vlm_attention_map_saving(self):
+        """Disable saving general VLM attention maps."""
+        self.save_general_vlm_attention_maps = False
+    
+    def get_general_vlm_attention_maps(self, last_n_layers=None):
+        """Get saved general VLM prefix attention maps (baseline with dummy task).
+        
+        Args:
+            last_n_layers: If specified, only return attention from last N layers.
+                          If None, return all layers.
+        
+        Returns:
+            Dictionary with structure:
+            {
+                'attention_weights': {layer_idx: tensor},
+                'prefix_len': int,
+                'task_text': str,  # The dummy task used
+            }
+        """
+        if not self.general_vlm_attention_maps:
+            return {}
+        
+        if last_n_layers is None:
+            return self.general_vlm_attention_maps
+        
+        # Filter to only include last N layers
+        att_weights = self.general_vlm_attention_maps.get('attention_weights', {})
+        if att_weights is None or not att_weights:
+            return {}
+        
+        max_layer = max(att_weights.keys())
+        filtered_weights = {
+            layer: weights 
+            for layer, weights in att_weights.items() 
+            if layer >= (max_layer - last_n_layers + 1)
+        }
+        
+        return {
+            'attention_weights': filtered_weights,
+            'prefix_len': self.general_vlm_attention_maps.get('prefix_len', 0),
+            'task_text': self.general_vlm_attention_maps.get('task_text', ''),
+        }
+    
+    def clear_general_vlm_attention_maps(self):
+        """Clear stored general VLM attention maps to free memory."""
+        self.general_vlm_attention_maps = {}
+    
+    def encode_prefix_for_attention(self, images, img_masks, tokens, masks, task_text: str = None):
+        """Run only prefix encoding to capture VLM attention (no action sampling).
+        
+        This is more efficient than sample_actions() when you only need VLM attention
+        and don't need to predict actions. Skips the entire action expert and denoising loop.
+        
+        Args:
+            images: List of image tensors
+            img_masks: List of image masks
+            tokens: Language tokens
+            masks: Language attention masks
+            task_text: Optional task text for metadata
+        
+        Note:
+            Stores attention in self.vlm_attention_maps if save_vlm_attention_maps is enabled,
+            or in self.general_vlm_attention_maps if save_general_vlm_attention_maps is enabled.
+        """
+        # Embed prefix
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, tokens, masks)
+        
+        # Prepare attention masks for prefix-only forward pass
+        att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+        position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+        att_2d_masks_4d = self._prepare_attention_masks_4d(att_2d_masks)
+        
+        # Run forward through VLM model (prefix-only, no action expert)
+        # This captures the prefix self-attention we want
+        self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
+        
+        result = self.paligemma_with_expert.forward(
+            attention_mask=att_2d_masks_4d,
+            position_ids=position_ids,
+            inputs_embeds=[prefix_embs, None],  # No action expert suffix
+            use_cache=False,
+            adarms_cond=[None, None],
+            return_attention_weights=(self.save_vlm_attention_maps or self.save_general_vlm_attention_maps),
+        )
+        
+        # Extract attention weights
+        if self.save_vlm_attention_maps or self.save_general_vlm_attention_maps:
+            outputs_embeds, _, att_weights = result
+            if att_weights is not None:
+                # Store attention based on which mode is enabled
+                target_dict = self.general_vlm_attention_maps if self.save_general_vlm_attention_maps else self.vlm_attention_maps
+                target_dict['attention_weights'] = {}
+                target_dict['prefix_len'] = prefix_embs.shape[1]
+                if task_text and self.save_general_vlm_attention_maps:
+                    target_dict['task_text'] = task_text
+                
+                # Store attention from all layers
+                for layer_idx, layer_att in enumerate(att_weights):
+                    if layer_att is not None:
+                        # layer_att shape: (batch, heads, seq_len, seq_len)
+                        target_dict['attention_weights'][layer_idx] = layer_att.detach().cpu()
 
     def _apply_checkpoint(self, func, *args, **kwargs):
         """Helper method to apply gradient checkpointing if enabled."""
@@ -1603,3 +1722,47 @@ class PI05Policy(PreTrainedPolicy):
         )
         
         return uncertainties
+    def collect_general_vlm_attention(
+        self, 
+        batch_with_dummy_task: dict[str, Tensor],
+        dummy_task_text: str = "task: perform the task"
+    ):
+        """
+        Collect general VLM attention baseline using a dummy task instruction.
+        
+        This method runs ONLY prefix encoding (no action expert/denoising) with a
+        generic task ("task: perform the task") to establish baseline attention
+        patterns without task-specific guidance. Much more efficient than full action sampling.
+        
+        Args:
+            batch_with_dummy_task: Batch dict with dummy task tokens
+                                   (same format as normal batch but with generic task text)
+            dummy_task_text: The dummy task text used (for metadata)
+        
+        Note:
+            - Does NOT affect task execution (no actions predicted)
+            - Uses actual robot state and images from the batch
+            - Only runs VLM prefix encoding (skips action expert completely)
+            - ~10x faster than sample_actions() since it skips denoising
+        """
+        if not hasattr(self.model, 'save_general_vlm_attention_maps'):
+            logging.warning("Model does not support general VLM attention collection")
+            return
+        
+        # Temporarily enable general VLM attention saving
+        was_general_saving_enabled = self.model.save_general_vlm_attention_maps
+        self.model.save_general_vlm_attention_maps = True
+        self.model.general_vlm_attention_maps = {}
+        
+        try:
+            # Prepare inputs (same as normal prediction)
+            images, img_masks = self._preprocess_images(batch_with_dummy_task)
+            tokens = batch_with_dummy_task[f"{OBS_LANGUAGE_TOKENS}"]
+            masks = batch_with_dummy_task[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
+            
+            # Run ONLY prefix encoding (efficient - no action expert, no denoising)
+            self.model.encode_prefix_for_attention(images, img_masks, tokens, masks, task_text=dummy_task_text)
+            
+        finally:
+            # Restore original state
+            self.model.save_general_vlm_attention_maps = was_general_saving_enabled

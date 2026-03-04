@@ -27,6 +27,7 @@ COMPILE_MODEL="false"
 USE_INIT_STATES="true"
 SAVE_ATTENTION_MAPS="true"
 SAVE_VLM_ATTENTION_MAPS="true"
+SAVE_GENERAL_VLM_ATTENTION_MAPS="true"
 SAVE_UNCERTAINTY_MAPS="true"
 
 echo "================================================================================"
@@ -61,6 +62,7 @@ for TASK_ID in "${TASK_IDS[@]}"; do
         --use_init_states "$USE_INIT_STATES" \
         --save_attention_maps "$SAVE_ATTENTION_MAPS" \
         --save_vlm_attention_maps "$SAVE_VLM_ATTENTION_MAPS" \
+        --save_general_vlm_attention_maps "$SAVE_GENERAL_VLM_ATTENTION_MAPS" \
         --save_uncertainty_maps "$SAVE_UNCERTAINTY_MAPS" \
         --output_dir "$OUTPUT_DIR" \
         --bddl_dir "$BDDL_DIR" \
