@@ -3,23 +3,40 @@
 VLM Attention Visualization for Pi0.5
 
 This script visualizes task instruction → image attention from saved VLM attention maps.
-It shows which image regions the model attends to when processing the task command.
+Supports both task-specific and general (baseline) VLM attention visualization.
 
 Key Features:
 - Extract task→image attention from VLM attention maps
+- Support both task-specific and general VLM attention (via --attention_type flag)
 - Aggregate across task tokens (or select specific tokens)
 - Create heatmaps overlaid on video frames
 - Handle coordinate transformations (LiberoProcessor flips)
 - Support both agentview and wrist cameras
 
 Usage:
+    # Task-specific VLM attention (default)
     python visualize_vlm_attention.py \\
-        --attention_file eval_logs/quick_test/vlm_attention/libero_object_0/episode_00000_vlm_attention.pt \\
-        --video_file eval_logs/quick_test/videos/libero_object_0/eval_episode_00000.mp4 \\
-        --output_dir eval_logs/quick_test/vlm_attention/libero_object_0/viz_episode_00000 \\
+        --eval_folder eval_logs/quick_test \\
+        --task_name libero_object \\
+        --task_id 0 \\
+        --episode_id 0 \\
+        --rollout_steps 0 10 20 30 \\
+        --layer 17
+    
+    # General VLM attention (baseline with dummy task)
+    python visualize_vlm_attention.py \\
+        --eval_folder eval_logs/quick_test \\
+        --task_name libero_object \\
+        --task_id 0 \\
+        --episode_id 0 \\
         --rollout_steps 0 10 20 30 \\
         --layer 17 \\
-        --task_text "pick up the alphabet soup and place it in the basket"
+        --attention_type general
+    
+    # Compare task vs general attention (run both, then analyze delta)
+    # 1. Generate task-specific visualizations (attention_type=task)
+    # 2. Generate general baseline visualizations (attention_type=general)
+    # 3. Compute attention delta: task_attention - general_attention
 """
 
 import argparse
@@ -72,19 +89,21 @@ def get_libero_task_instruction(task_name: str, task_id: int) -> str:
     return task.language
 
 
-def load_vlm_attention_data(attention_path: Path, rollout_step: int, layer: int = 17):
+def load_vlm_attention_data(attention_path: Path, rollout_step: int, layer: int = 17, attention_type: str = "task"):
     """
     Load VLM attention weights from .pt file for a specific rollout step.
     
     Args:
-        attention_path: Path to episode_XXXXX_vlm_attention.pt file
+        attention_path: Path to episode_XXXXX_vlm_attention.pt or episode_XXXXX_general_vlm_attention.pt
         rollout_step: Which rollout step to load (0-N)
         layer: Which transformer layer to use (default: 17, last layer)
+        attention_type: "task" for task-specific VLM, "general" for baseline (default: "task")
     
     Returns:
-        Tuple of (attention_weights, prefix_len):
+        Tuple of (attention_weights, prefix_len, task_text):
         - attention_weights: tensor of shape [1, 8, prefix_len, prefix_len]
         - prefix_len: int (typically 968 = 768 image + 200 language)
+        - task_text: str (actual task or "task: perform the task" for general)
     """
     data = torch.load(attention_path, map_location='cpu')
     rollout_steps = data['rollout_steps']
@@ -100,16 +119,60 @@ def load_vlm_attention_data(attention_path: Path, rollout_step: int, layer: int 
         available_steps = [s['rollout_step'] for s in rollout_steps]
         raise ValueError(f"Rollout step {rollout_step} not found. Available: {available_steps}")
     
-    # Extract VLM attention
-    vlm_attention = rollout_data['vlm_attention']
+    # Extract VLM attention (key depends on attention_type)
+    if attention_type == "task":
+        if 'vlm_attention' not in rollout_data:
+            available_keys = list(rollout_data.keys())
+            raise KeyError(f"Key 'vlm_attention' not found in rollout_data. Available keys: {available_keys}")
+        vlm_attention = rollout_data['vlm_attention']
+    elif attention_type == "general":
+        if 'general_vlm_attention' not in rollout_data:
+            available_keys = list(rollout_data.keys())
+            raise KeyError(f"Key 'general_vlm_attention' not found in rollout_data. Available keys: {available_keys}")
+        vlm_attention = rollout_data['general_vlm_attention']
+    else:
+        raise ValueError(f"Unknown attention_type: {attention_type}. Must be 'task' or 'general'")
+    
     prefix_len = vlm_attention['prefix_len']
     attention_weights = vlm_attention['attention_weights']
+    task_text_raw = vlm_attention.get('task_text', None)  # May be None for task-specific
+    
+    # Debug: print the raw type and value
+    print(f"  [DEBUG] task_text_raw type: {type(task_text_raw)}, value: {task_text_raw}")
+    
+    # Handle case where task_text is a dict or string representation of dict
+    if task_text_raw is not None:
+        if isinstance(task_text_raw, dict):
+            # It's a real dict
+            task_text = task_text_raw.get('task', 'perform the task')
+        elif isinstance(task_text_raw, str):
+            # Check if it's a string representation of a dict
+            if task_text_raw.strip().startswith('{') and 'task' in task_text_raw:
+                # Try to parse as dict
+                import ast
+                try:
+                    parsed = ast.literal_eval(task_text_raw)
+                    if isinstance(parsed, dict):
+                        task_text = parsed.get('task', 'perform the task')
+                    else:
+                        task_text = task_text_raw
+                except:
+                    # Parsing failed, use as-is
+                    task_text = task_text_raw
+            else:
+                # Regular string
+                task_text = task_text_raw
+        else:
+            # Unknown type, convert to string
+            task_text = str(task_text_raw)
+    else:
+        task_text = None
     
     if layer not in attention_weights:
         available_layers = list(attention_weights.keys())
         raise ValueError(f"Layer {layer} not found. Available: {available_layers}")
     
-    return attention_weights[layer], prefix_len
+    return attention_weights[layer], prefix_len, task_text
 
 
 def extract_task_to_img_attention(
@@ -399,6 +462,7 @@ def visualize_vlm_attention_for_timestep(
     colormap: str = "hot",
     specific_token_idx: int = None,
     specific_head_idx: int = None,
+    attention_type: str = "task",
 ):
     """
     Create VLM attention visualizations for a single timestep.
@@ -419,12 +483,20 @@ def visualize_vlm_attention_for_timestep(
     
     # Load VLM attention
     print(f"  Loading VLM attention for rollout step {rollout_step}...")
-    attention_weights, prefix_len = load_vlm_attention_data(attention_path, rollout_step, layer)
+    attention_weights, prefix_len, saved_task_text = load_vlm_attention_data(attention_path, rollout_step, layer, attention_type)
+    
+    # Use saved task text if available (for general VLM), otherwise use provided task_text
+    if saved_task_text is not None:
+        task_text = saved_task_text
+        print(f"  Using task text from attention data: '{task_text}'")
     
     # Find task token boundaries
     print(f"  Finding task token boundaries...")
     # Reconstruct full text (this is a simplification - in practice, get from processor)
+    # Both general and task-specific need "Task:" prefix
     full_text = f"Task: {task_text}, State: " + " ".join(["128"] * 32) + ";\nAction: "
+    
+    print(f"    Full text for tokenization: '{full_text[:100]}...'")  # Debug: show first 100 chars
     
     helper = TokenBoundaryHelper()
     boundaries = helper.find_token_boundaries(full_text, num_img_tokens=768)
@@ -497,22 +569,35 @@ def main():
         description="Visualize VLM attention (task→image) from saved attention maps"
     )
     parser.add_argument(
-        "--attention_file",
+        "--eval_folder",
         type=Path,
         required=True,
-        help="Path to episode_XXXXX_vlm_attention.pt file"
+        help="Evaluation output folder (e.g., eval_logs/quick_test)"
     )
     parser.add_argument(
-        "--video_file",
-        type=Path,
+        "--task_name",
+        type=str,
         required=True,
-        help="Path to eval_episode_XXXXX.mp4 file"
+        help="LIBERO task suite name (e.g., 'libero_object')"
     )
     parser.add_argument(
-        "--output_dir",
-        type=Path,
+        "--task_id",
+        type=int,
         required=True,
-        help="Directory to save visualization images"
+        help="LIBERO task ID (0-9)"
+    )
+    parser.add_argument(
+        "--episode_id",
+        type=int,
+        required=True,
+        help="Episode ID to visualize"
+    )
+    parser.add_argument(
+        "--attention_type",
+        type=str,
+        default="task",
+        choices=["task", "general"],
+        help="Type of VLM attention: 'task' (task-specific) or 'general' (baseline with dummy task, default: task)"
     )
     parser.add_argument(
         "--rollout_steps",
@@ -527,24 +612,7 @@ def main():
         default=17,
         help="Which transformer layer to visualize (default: 17 = last layer)"
     )
-    parser.add_argument(
-        "--task_text",
-        type=str,
-        default=None,
-        help="Task instruction text (e.g., 'Pick the alphabet soup and place it in the basket'). If not provided, will auto-detect from task_name and task_id."
-    )
-    parser.add_argument(
-        "--task_name",
-        type=str,
-        default=None,
-        help="LIBERO task suite name (e.g., 'libero_object'). Used with --task_id to auto-detect task text."
-    )
-    parser.add_argument(
-        "--task_id",
-        type=int,
-        default=None,
-        help="LIBERO task ID (0-9). Used with --task_name to auto-detect task text."
-    )
+
     parser.add_argument(
         "--head_aggregation",
         type=str,
@@ -586,28 +654,45 @@ def main():
     
     args = parser.parse_args()
     
+    # Construct file paths based on attention_type
+    task_name_id = f"{args.task_name}_{args.task_id}"
+    episode_num = f"{args.episode_id:05d}"
+    
+    if args.attention_type == "task":
+        attention_folder = "vlm_attention"
+        attention_filename = f"episode_{episode_num}_vlm_attention.pt"
+    else:  # general
+        attention_folder = "general_vlm_attention"
+        attention_filename = f"episode_{episode_num}_general_vlm_attention.pt"
+    
+    attention_file = args.eval_folder / attention_folder / task_name_id / attention_filename
+    video_file = args.eval_folder / "videos" / task_name_id / f"eval_episode_{episode_num}.mp4"
+    output_dir = args.eval_folder / attention_folder / task_name_id / f"viz_episode_{episode_num}"
+    
     # Verify files exist
-    if not args.attention_file.exists():
-        raise FileNotFoundError(f"Attention file not found: {args.attention_file}")
-    if not args.video_file.exists():
-        raise FileNotFoundError(f"Video file not found: {args.video_file}")
+    if not attention_file.exists():
+        raise FileNotFoundError(f"Attention file not found: {attention_file}")
+    if not video_file.exists():
+        raise FileNotFoundError(f"Video file not found: {video_file}")
     
-    # Auto-detect task text if not provided
-    if args.task_text is None:
-        if args.task_name is None or args.task_id is None:
-            raise ValueError("Must provide either --task_text OR both --task_name and --task_id")
-        args.task_text = get_libero_task_instruction(args.task_name, args.task_id)
-        print(f"Auto-detected task text: \"{args.task_text}\"")
+    # Get task text (for task-specific, auto-detect; for general, will be extracted from data)
+    if args.attention_type == "task":
+        task_text = get_libero_task_instruction(args.task_name, args.task_id)
+        print(f"Auto-detected task text: \"{task_text}\"")
+    else:
+        task_text = "task: perform the task"  # Will be overridden by data if available
     
     print("=" * 80)
-    print("VLM Attention Visualization")
+    print(f"VLM Attention Visualization ({args.attention_type.capitalize()})")
     print("=" * 80)
-    print(f"Attention file: {args.attention_file}")
-    print(f"Video file: {args.video_file}")
-    print(f"Output directory: {args.output_dir}")
+    print(f"Attention type: {args.attention_type}")
+    print(f"Attention file: {attention_file}")
+    print(f"Video file: {video_file}")
+    print(f"Output directory: {output_dir}")
     print(f"Rollout steps: {args.rollout_steps}")
     print(f"Layer: {args.layer}")
-    print(f"Task text: {args.task_text}")
+    print(f"Task: {args.task_name}_{args.task_id}")
+    print(f"Episode: {args.episode_id}")
     print(f"Specific token: {args.specific_token_idx if args.specific_token_idx is not None else 'None (aggregate all)'}")
     print(f"Specific head: {args.specific_head_idx if args.specific_head_idx is not None else 'None (aggregate all)'}")
     print(f"Aggregation: heads={args.head_aggregation if args.specific_head_idx is None else 'N/A'}, tokens={args.token_aggregation if args.specific_token_idx is None else 'N/A'}")
@@ -618,11 +703,11 @@ def main():
         print(f"\nProcessing rollout step {rollout_step}...")
         try:
             visualize_vlm_attention_for_timestep(
-                attention_path=args.attention_file,
-                video_path=args.video_file,
-                output_dir=args.output_dir,
+                attention_path=attention_file,
+                video_path=video_file,
+                output_dir=output_dir,
                 rollout_step=rollout_step,
-                task_text=args.task_text,
+                task_text=task_text,
                 layer=args.layer,
                 head_aggregation=args.head_aggregation,
                 token_aggregation=args.token_aggregation,
@@ -630,6 +715,7 @@ def main():
                 colormap=args.colormap,
                 specific_token_idx=args.specific_token_idx,
                 specific_head_idx=args.specific_head_idx,
+                attention_type=args.attention_type,
             )
         except Exception as e:
             print(f"  ERROR: {e}")
@@ -637,7 +723,7 @@ def main():
     
     print("\n" + "=" * 80)
     print("✓ Visualization complete!")
-    print(f"  Output saved to: {args.output_dir}")
+    print(f"  Output saved to: {output_dir}")
     print("=" * 80)
 
 

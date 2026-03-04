@@ -7,6 +7,15 @@
 #   Batch process VLM attention maps to create visualizations showing how the
 #   model's task instruction tokens attend to different image regions.
 #
+#   Supports TWO types of VLM attention:
+#   1. Task-specific (default): Uses actual task instruction from LIBERO
+#   2. General baseline: Uses dummy task "task: perform the task"
+#
+# SWITCHING BETWEEN TYPES:
+#   Set ATTENTION_TYPE variable below:
+#   - ATTENTION_TYPE="task"    → Visualize task-specific VLM attention
+#   - ATTENTION_TYPE="general" → Visualize general VLM attention baseline
+#
 # WHAT IT DOES:
 #   1. Reads VLM attention maps (.pt files) from evaluation runs
 #   2. Reads corresponding video frames (.mp4 files)
@@ -43,12 +52,14 @@
 # -----------------------------------------------------------------------------
 
 # Which evaluation folder to process
-EVAL_FOLDER="uncertainty_quantification/eval_log/vlm_attention_object_all" #eval_logs/quick_test_vlm_attention_1
+EVAL_FOLDER="uncertainty_quantification/eval_log/vlm_general_attention_object_all" #eval_logs/quick_test_vlm_attention_1
 TASK_NAME="libero_object"
 
+# Which type of VLM attention to visualize
+ATTENTION_TYPE="general"   # "task" = task-specific VLM attention, "general" = baseline with dummy task
 # Task range to process
-EVAL_SCENE_INDEX=9      # Max task ID (0-9 for per taks, e.g., object_0 to object_9)
-EVAL_TASK_AMOUNT=2      # Max episode per task
+EVAL_SCENE_INDEX=1      # Max task ID (0-9 for per taks, e.g., object_0 to object_9)
+EVAL_TASK_AMOUNT=1      # Max episode per task
 
 # Which rollout steps to visualize
 TIMESTEPS=(0 10 20 30 40 50 60 70 80 90 100 110 120 130 140)  # Visualize at these rollout steps (0 = prefix encoding, 10/20/30 = during execution)
@@ -63,7 +74,7 @@ COLORMAP="hot"           # Matplotlib colormap: hot/viridis/jet/etc
 # Optional: Visualize specific tokens (leave empty for aggregated view)
 # Example: SPECIFIC_TOKEN_IDXS=(773 774 780)  # for 'alphabet', 'soup', 'basket' tokens
 # Leave empty or set to () to aggregate all task tokens with TOKEN_AGG
-SPECIFIC_TOKEN_IDXS=(774 776 770 773  775  780)    # Can specify multiple token indices to loop through
+SPECIFIC_TOKEN_IDXS=(770)    # Can specify multiple token indices to loop through
 # tokens for "pick up the alphabet soup and place it in the basket":
 # Token 768: 'Task           ' (chars   0-  4)
 #   Token 769: ':              ' (chars   4-  5)
@@ -96,6 +107,7 @@ SPECIFIC_HEAD_IDXS=(0 1 2 3 4 5 6 7)    # Can specify multiple head indices to l
 echo "================================================================================"
 echo "VLM Attention Visualization Batch Processing"
 echo "================================================================================"
+echo "Attention type: $ATTENTION_TYPE"
 echo "Eval folder: $EVAL_FOLDER"
 echo "Processing tasks 0-${EVAL_SCENE_INDEX}, episodes 0-$((EVAL_TASK_AMOUNT-1))"
 echo "Timesteps: ${TIMESTEPS[@]}"
@@ -163,10 +175,15 @@ for LAYER in "${LAYERS[@]}"; do
                 for EPISODE_ID in $(seq 0 $((EVAL_TASK_AMOUNT-1))); do
                     EPISODE_NUM=$(printf "%05d" $EPISODE_ID)
                     
-                    # Define file paths
-                    ATTENTION_FILE="${EVAL_FOLDER}/vlm_attention/${TASK_NAME_ID}/episode_${EPISODE_NUM}_vlm_attention.pt"
+                    # Define file paths based on attention type
+                    if [ "$ATTENTION_TYPE" = "task" ]; then
+                        ATTENTION_FILE="${EVAL_FOLDER}/vlm_attention/${TASK_NAME_ID}/episode_${EPISODE_NUM}_vlm_attention.pt"
+                        OUTPUT_DIR="${EVAL_FOLDER}/vlm_attention/${TASK_NAME_ID}/viz_episode_${EPISODE_NUM}"
+                    else
+                        ATTENTION_FILE="${EVAL_FOLDER}/general_vlm_attention/${TASK_NAME_ID}/episode_${EPISODE_NUM}_general_vlm_attention.pt"
+                        OUTPUT_DIR="${EVAL_FOLDER}/general_vlm_attention/${TASK_NAME_ID}/viz_episode_${EPISODE_NUM}"
+                    fi
                     VIDEO_FILE="${EVAL_FOLDER}/videos/${TASK_NAME_ID}/eval_episode_${EPISODE_NUM}.mp4"
-                    OUTPUT_DIR="${EVAL_FOLDER}/vlm_attention/${TASK_NAME_ID}/viz_episode_${EPISODE_NUM}"
                     
                     # Check if files exist
                     if [ ! -f "$ATTENTION_FILE" ]; then
@@ -181,15 +198,15 @@ for LAYER in "${LAYERS[@]}"; do
                     
                     echo "        Episode ${EPISODE_NUM}: Processing..."
                     
-                    # Build command with optional specific_token_idx
+                    # Build command with new argument structure
                     CMD="python pi_setting/eval/visualize_vlm_attention.py \
-                        --attention_file '$ATTENTION_FILE' \
-                        --video_file '$VIDEO_FILE' \
-                        --output_dir '$OUTPUT_DIR' \
+                        --eval_folder '$EVAL_FOLDER' \
+                        --task_name $TASK_NAME \
+                        --task_id $TASK_ID \
+                        --episode_id $EPISODE_ID \
                         --rollout_steps ${TIMESTEPS[@]} \
                         --layer $LAYER \
-                        --task_name libero_object \
-                        --task_id $TASK_ID \
+                        --attention_type $ATTENTION_TYPE \
                         --head_aggregation $HEAD_AGG \
                         --alpha $ALPHA \
                         --colormap $COLORMAP"
@@ -243,8 +260,15 @@ echo "==========================================================================
 if [ $TOTAL_PROCESSED -gt 0 ]; then
     echo ""
     echo "Example output locations:"
-    echo "  ${EVAL_FOLDER}/vlm_attention/libero_object_0/viz_episode_00000/"
-    echo ""
-    echo "To view results:"
-    echo "  ls ${EVAL_FOLDER}/vlm_attention/libero_object_0/viz_episode_00000/"
+    if [ "$ATTENTION_TYPE" = "task" ]; then
+        echo "  ${EVAL_FOLDER}/vlm_attention/libero_object_0/viz_episode_00000/"
+        echo ""
+        echo "To view results:"
+        echo "  ls ${EVAL_FOLDER}/vlm_attention/libero_object_0/viz_episode_00000/"
+    else
+        echo "  ${EVAL_FOLDER}/general_vlm_attention/libero_object_0/viz_episode_00000/"
+        echo ""
+        echo "To view results:"
+        echo "  ls ${EVAL_FOLDER}/general_vlm_attention/libero_object_0/viz_episode_00000/"
+    fi
 fi

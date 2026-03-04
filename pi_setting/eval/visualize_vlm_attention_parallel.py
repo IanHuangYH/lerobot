@@ -3,19 +3,27 @@
 Parallel VLM Attention Visualization
 
 This script parallelizes VLM attention visualization across multiple CPU cores.
-It generates all parameter combinations and processes them in parallel.
+Supports both task-specific and general (baseline) VLM attention visualization.
 
 Usage:
+    # Task-specific VLM attention
     python visualize_vlm_attention_parallel.py \\
         --eval_folder uncertainty_quantification/eval_log/vlm_attention_object_all \\
         --task_name libero_object \\
         --max_task_id 9 \\
         --max_episode_id 1 \\
         --layers 15 16 17 \\
-        --tokens 773 774 780 \\
-        --heads 0 1 2 3 4 5 6 7 \\
+        --timesteps 0 10 20 30
+    
+    # General VLM attention (baseline)
+    python visualize_vlm_attention_parallel.py \\
+        --eval_folder uncertainty_quantification/eval_log/general_vlm_attention_object_all \\
+        --task_name libero_object \\
+        --max_task_id 9 \\
+        --max_episode_id 1 \\
+        --layers 15 16 17 \\
         --timesteps 0 10 20 30 \\
-        --num_workers 8
+        --attention_type general
 """
 
 import argparse
@@ -31,27 +39,27 @@ def visualize_one_combination(args_tuple):
     Worker function to visualize one parameter combination.
     
     Args:
-        args_tuple: (attention_file, video_file, output_dir, rollout_steps,
-                    layer, task_name, task_id, head_agg, token_agg, 
+        args_tuple: (eval_folder, task_name, task_id, episode_id, rollout_steps,
+                    layer, attention_type, head_agg, token_agg, 
                     alpha, colormap, specific_token_idx, specific_head_idx)
     
     Returns:
         Tuple of (success: bool, message: str)
     """
-    (attention_file, video_file, output_dir, rollout_steps,
-     layer, task_name, task_id, head_agg, token_agg, 
+    (eval_folder, task_name, task_id, episode_id, rollout_steps,
+     layer, attention_type, head_agg, token_agg, 
      alpha, colormap, specific_token_idx, specific_head_idx) = args_tuple
     
     # Build command
     cmd = [
         "python", "pi_setting/eval/visualize_vlm_attention.py",
-        "--attention_file", str(attention_file),
-        "--video_file", str(video_file),
-        "--output_dir", str(output_dir),
-        "--rollout_steps", *[str(s) for s in rollout_steps],
-        "--layer", str(layer),
+        "--eval_folder", str(eval_folder),
         "--task_name", task_name,
         "--task_id", str(task_id),
+        "--episode_id", str(episode_id),
+        "--rollout_steps", *[str(s) for s in rollout_steps],
+        "--layer", str(layer),
+        "--attention_type", attention_type,
         "--head_aggregation", head_agg,
         "--alpha", str(alpha),
         "--colormap", colormap,
@@ -67,7 +75,7 @@ def visualize_one_combination(args_tuple):
         cmd.extend(["--specific_head_idx", str(specific_head_idx)])
     
     # Create identifier for logging
-    identifier = f"Task{task_id}_Ep{attention_file.stem.split('_')[1]}_L{layer}"
+    identifier = f"Task{task_id}_Ep{episode_id}_L{layer}"
     if specific_token_idx is not None:
         identifier += f"_T{specific_token_idx}"
     if specific_head_idx is not None:
@@ -103,6 +111,7 @@ def generate_all_combinations(
     tokens: List[int],
     heads: List[int],
     timesteps: List[int],
+    attention_type: str,
     head_agg: str,
     token_agg: str,
     alpha: float,
@@ -116,6 +125,14 @@ def generate_all_combinations(
     """
     combinations = []
     
+    # Determine folder name based on attention_type
+    if attention_type == "task":
+        attention_folder = "vlm_attention"
+        attention_filename = "episode_{}_vlm_attention.pt"
+    else:  # general
+        attention_folder = "general_vlm_attention"
+        attention_filename = "episode_{}_general_vlm_attention.pt"
+    
     for layer in layers:
         for task_id in range(max_task_id + 1):
             task_name_id = f"{task_name}_{task_id}"
@@ -124,7 +141,7 @@ def generate_all_combinations(
                 episode_num = f"{episode_id:05d}"
                 
                 # Check if files exist
-                attention_file = eval_folder / "vlm_attention" / task_name_id / f"episode_{episode_num}_vlm_attention.pt"
+                attention_file = eval_folder / attention_folder / task_name_id / attention_filename.format(episode_num)
                 video_file = eval_folder / "videos" / task_name_id / f"eval_episode_{episode_num}.mp4"
                 
                 if not attention_file.exists() or not video_file.exists():
@@ -138,16 +155,14 @@ def generate_all_combinations(
                 
                 for token_idx in token_indices:
                     for head_idx in head_indices:
-                        output_dir = eval_folder / "vlm_attention" / task_name_id / f"viz_episode_{episode_num}"
-                        
                         combinations.append((
-                            attention_file,
-                            video_file,
-                            output_dir,
-                            timesteps,
-                            layer,
+                            eval_folder,
                             task_name,
                             task_id,
+                            episode_id,
+                            timesteps,
+                            layer,
+                            attention_type,
                             head_agg,
                             token_agg,
                             alpha,
@@ -186,6 +201,13 @@ def main():
         type=int,
         default=1,
         help="Maximum episode ID to process (default: 1)"
+    )
+    parser.add_argument(
+        "--attention_type",
+        type=str,
+        default="task",
+        choices=["task", "general"],
+        help="Type of VLM attention: 'task' (task-specific) or 'general' (baseline, default: task)"
     )
     parser.add_argument(
         "--layers",
@@ -255,8 +277,9 @@ def main():
         args.num_workers = mp.cpu_count()
     
     print("=" * 80)
-    print("Parallel VLM Attention Visualization")
+    print(f"Parallel VLM Attention Visualization ({args.attention_type.capitalize()})")
     print("=" * 80)
+    print(f"Attention type: {args.attention_type}")
     print(f"Eval folder: {args.eval_folder}")
     print(f"Task range: {args.task_name}_0 to {args.task_name}_{args.max_task_id}")
     print(f"Episode range: 0 to {args.max_episode_id}")
@@ -278,6 +301,7 @@ def main():
         tokens=args.tokens,
         heads=args.heads,
         timesteps=args.timesteps,
+        attention_type=args.attention_type,
         head_agg=args.head_aggregation,
         token_agg=args.token_aggregation,
         alpha=args.alpha,

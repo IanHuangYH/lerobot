@@ -8,15 +8,23 @@
 #
 # SPEEDUP: ~8-16x faster depending on number of CPU cores
 #
+# ATTENTION TYPES:
+#   Set ATTENTION_TYPE variable below:
+#   - ATTENTION_TYPE="task"    → Visualize task-specific VLM attention
+#   - ATTENTION_TYPE="general" → Visualize general VLM attention baseline
+#
 # =============================================================================
 
 # Configuration (same as run_visualize_vlm_attention.sh but runs in parallel)
-EVAL_FOLDER="uncertainty_quantification/eval_log/vlm_attention_object_all"
-TASK_NAME="libero_object"
+EVAL_FOLDER="uncertainty_quantification/eval_log/vlm_attention_scene_variants"
+TASK_NAME="libero_object_variants"
+
+# Which type of VLM attention to visualize
+ATTENTION_TYPE="task"   # "task" = task-specific VLM attention, "general" = baseline with dummy task
 
 # Task/episode range
 MAX_TASK_ID=9
-MAX_EPISODE_ID=1
+MAX_EPISODE_ID=7
 
 # Which parameters to visualize
 LAYERS=(17 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0)  # Can specify multiple: (15 16 17)
@@ -46,7 +54,7 @@ ALPHA=0.5
 COLORMAP="hot"
 
 # Parallelization
-NUM_WORKERS=2  # Set to empty "" to auto-detect CPU count
+NUM_WORKERS=8  # Set to empty "" to auto-detect CPU count
 
 # =============================================================================
 # Run parallel visualization
@@ -55,6 +63,7 @@ NUM_WORKERS=2  # Set to empty "" to auto-detect CPU count
 echo "================================================================================"
 echo "Parallel VLM Attention Visualization"
 echo "================================================================================"
+echo "Attention type: $ATTENTION_TYPE"
 echo "Eval folder: $EVAL_FOLDER"
 echo "Tasks: 0-${MAX_TASK_ID}, Episodes: 0-${MAX_EPISODE_ID}"
 echo "Layers: ${LAYERS[@]}"
@@ -71,6 +80,7 @@ CMD="python pi_setting/eval/visualize_vlm_attention_parallel.py \
     --max_episode_id $MAX_EPISODE_ID \
     --layers ${LAYERS[@]} \
     --timesteps ${TIMESTEPS[@]} \
+    --attention_type $ATTENTION_TYPE \
     --head_aggregation $HEAD_AGG \
     --token_aggregation $TOKEN_AGG \
     --alpha $ALPHA \
@@ -97,5 +107,9 @@ eval $CMD
 echo ""
 echo "================================================================================"
 echo "Done! Check output in:"
-echo "  $EVAL_FOLDER/vlm_attention/libero_object_X/viz_episode_XXXXX/"
+if [ "$ATTENTION_TYPE" = "task" ]; then
+    echo "  $EVAL_FOLDER/vlm_attention/libero_object_X/viz_episode_XXXXX/"
+else
+    echo "  $EVAL_FOLDER/general_vlm_attention/libero_object_X/viz_episode_XXXXX/"
+fi
 echo "================================================================================"
