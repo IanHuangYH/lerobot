@@ -6,7 +6,7 @@
 ALL_GPU=0,1
 POLICY_GPU_ID=0
 
-OUTPUT_DIR="uncertainty_quantification/eval_log/rnd_variant_object"
+OUTPUT_DIR="uncertainty_quantification/eval_log/vlm_attention_scene_variants"
 TASK_SUITE=libero_object_variants
 
 # Number of episodes (variants) per task
@@ -26,6 +26,7 @@ N_ACTION_STEPS=10
 COMPILE_MODEL="false"
 USE_INIT_STATES="true"
 SAVE_ATTENTION_MAPS="true"
+SAVE_VLM_ATTENTION_MAPS="true"
 SAVE_UNCERTAINTY_MAPS="true"
 
 echo "================================================================================"
@@ -59,6 +60,7 @@ for TASK_ID in "${TASK_IDS[@]}"; do
         --compile_model "$COMPILE_MODEL" \
         --use_init_states "$USE_INIT_STATES" \
         --save_attention_maps "$SAVE_ATTENTION_MAPS" \
+        --save_vlm_attention_maps "$SAVE_VLM_ATTENTION_MAPS" \
         --save_uncertainty_maps "$SAVE_UNCERTAINTY_MAPS" \
         --output_dir "$OUTPUT_DIR" \
         --bddl_dir "$BDDL_DIR" \

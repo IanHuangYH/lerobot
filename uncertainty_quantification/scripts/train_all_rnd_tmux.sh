@@ -26,10 +26,10 @@ LR=${LR:-1e-4}
 PATIENCE=${PATIENCE:-10}
 MAX_CACHED_CHUNKS=${MAX_CACHED_CHUNKS:-38}
 BATCH_SIZE=${BATCH_SIZE:-256}
-EPOCHS=${EPOCHS:-50}
+EPOCHS=${EPOCHS:-150}
 
 DATASET_DIR=${DATASET_DIR:-"uncertainty_quantification/rnd_dataset"}
-OUTPUT_DIR=${OUTPUT_DIR:-"uncertainty_quantification/rnd_save_models"}
+OUTPUT_DIR=${OUTPUT_DIR:-"uncertainty_quantification/rnd_save_models_long_150"}
 
 # Task types to train on
 TASK_TYPES=("object") #("spatial" "object" "goal" "long")
