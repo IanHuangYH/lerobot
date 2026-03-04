@@ -1,0 +1,330 @@
+#!/usr/bin/env python
+"""
+Parallel VLM Attention Visualization
+
+This script parallelizes VLM attention visualization across multiple CPU cores.
+It generates all parameter combinations and processes them in parallel.
+
+Usage:
+    python visualize_vlm_attention_parallel.py \\
+        --eval_folder uncertainty_quantification/eval_log/vlm_attention_object_all \\
+        --task_name libero_object \\
+        --max_task_id 9 \\
+        --max_episode_id 1 \\
+        --layers 15 16 17 \\
+        --tokens 773 774 780 \\
+        --heads 0 1 2 3 4 5 6 7 \\
+        --timesteps 0 10 20 30 \\
+        --num_workers 8
+"""
+
+import argparse
+import multiprocessing as mp
+from pathlib import Path
+from typing import List, Tuple
+import subprocess
+import sys
+
+
+def visualize_one_combination(args_tuple):
+    """
+    Worker function to visualize one parameter combination.
+    
+    Args:
+        args_tuple: (attention_file, video_file, output_dir, rollout_steps,
+                    layer, task_name, task_id, head_agg, token_agg, 
+                    alpha, colormap, specific_token_idx, specific_head_idx)
+    
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    (attention_file, video_file, output_dir, rollout_steps,
+     layer, task_name, task_id, head_agg, token_agg, 
+     alpha, colormap, specific_token_idx, specific_head_idx) = args_tuple
+    
+    # Build command
+    cmd = [
+        "python", "pi_setting/eval/visualize_vlm_attention.py",
+        "--attention_file", str(attention_file),
+        "--video_file", str(video_file),
+        "--output_dir", str(output_dir),
+        "--rollout_steps", *[str(s) for s in rollout_steps],
+        "--layer", str(layer),
+        "--task_name", task_name,
+        "--task_id", str(task_id),
+        "--head_aggregation", head_agg,
+        "--alpha", str(alpha),
+        "--colormap", colormap,
+    ]
+    
+    # Add optional parameters
+    if specific_token_idx is not None:
+        cmd.extend(["--specific_token_idx", str(specific_token_idx)])
+    else:
+        cmd.extend(["--token_aggregation", token_agg])
+    
+    if specific_head_idx is not None:
+        cmd.extend(["--specific_head_idx", str(specific_head_idx)])
+    
+    # Create identifier for logging
+    identifier = f"Task{task_id}_Ep{attention_file.stem.split('_')[1]}_L{layer}"
+    if specific_token_idx is not None:
+        identifier += f"_T{specific_token_idx}"
+    if specific_head_idx is not None:
+        identifier += f"_H{specific_head_idx}"
+    
+    print("run visualization for", identifier)
+    try:
+        # Run subprocess with suppressed output
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60  # 60 second timeout per visualization
+        )
+        
+        if result.returncode == 0:
+            return (True, identifier)
+        else:
+            return (False, f"{identifier}: {result.stderr[:100]}")
+    
+    except subprocess.TimeoutExpired:
+        return (False, f"{identifier}: Timeout")
+    except Exception as e:
+        return (False, f"{identifier}: {str(e)[:100]}")
+
+
+def generate_all_combinations(
+    eval_folder: Path,
+    task_name: str,
+    max_task_id: int,
+    max_episode_id: int,
+    layers: List[int],
+    tokens: List[int],
+    heads: List[int],
+    timesteps: List[int],
+    head_agg: str,
+    token_agg: str,
+    alpha: float,
+    colormap: str,
+) -> List[Tuple]:
+    """
+    Generate all parameter combinations to visualize.
+    
+    Returns:
+        List of argument tuples for visualize_one_combination()
+    """
+    combinations = []
+    
+    for layer in layers:
+        for task_id in range(max_task_id + 1):
+            task_name_id = f"{task_name}_{task_id}"
+            
+            for episode_id in range(max_episode_id + 1):
+                episode_num = f"{episode_id:05d}"
+                
+                # Check if files exist
+                attention_file = eval_folder / "vlm_attention" / task_name_id / f"episode_{episode_num}_vlm_attention.pt"
+                video_file = eval_folder / "videos" / task_name_id / f"eval_episode_{episode_num}.mp4"
+                
+                if not attention_file.exists() or not video_file.exists():
+                    continue
+                
+                # Determine token iteration
+                token_indices = tokens if tokens else [None]
+                
+                # Determine head iteration
+                head_indices = heads if heads else [None]
+                
+                for token_idx in token_indices:
+                    for head_idx in head_indices:
+                        output_dir = eval_folder / "vlm_attention" / task_name_id / f"viz_episode_{episode_num}"
+                        
+                        combinations.append((
+                            attention_file,
+                            video_file,
+                            output_dir,
+                            timesteps,
+                            layer,
+                            task_name,
+                            task_id,
+                            head_agg,
+                            token_agg,
+                            alpha,
+                            colormap,
+                            token_idx,
+                            head_idx,
+                        ))
+    
+    return combinations
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Parallel VLM attention visualization"
+    )
+    parser.add_argument(
+        "--eval_folder",
+        type=Path,
+        required=True,
+        help="Evaluation output folder"
+    )
+    parser.add_argument(
+        "--task_name",
+        type=str,
+        default="libero_object",
+        help="Task name (default: libero_object)"
+    )
+    parser.add_argument(
+        "--max_task_id",
+        type=int,
+        default=9,
+        help="Maximum task ID to process (default: 9)"
+    )
+    parser.add_argument(
+        "--max_episode_id",
+        type=int,
+        default=1,
+        help="Maximum episode ID to process (default: 1)"
+    )
+    parser.add_argument(
+        "--layers",
+        type=int,
+        nargs='+',
+        default=[17],
+        help="Layers to visualize (default: 17)"
+    )
+    parser.add_argument(
+        "--tokens",
+        type=int,
+        nargs='*',
+        default=[],
+        help="Specific token indices to visualize (empty = aggregate all)"
+    )
+    parser.add_argument(
+        "--heads",
+        type=int,
+        nargs='*',
+        default=[],
+        help="Specific head indices to visualize (empty = aggregate all)"
+    )
+    parser.add_argument(
+        "--timesteps",
+        type=int,
+        nargs='+',
+        default=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140],
+        help="Timesteps to visualize"
+    )
+    parser.add_argument(
+        "--head_aggregation",
+        type=str,
+        default="mean",
+        choices=["mean", "max", "sum", "min"],
+        help="Head aggregation method (default: mean)"
+    )
+    parser.add_argument(
+        "--token_aggregation",
+        type=str,
+        default="mean",
+        choices=["mean", "max", "sum", "min"],
+        help="Token aggregation method (default: mean)"
+    )
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=0.5,
+        help="Overlay alpha (default: 0.5)"
+    )
+    parser.add_argument(
+        "--colormap",
+        type=str,
+        default="hot",
+        help="Colormap (default: hot)"
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=None,
+        help="Number of parallel workers (default: CPU count)"
+    )
+    
+    args = parser.parse_args()
+    
+    # Auto-detect CPU count if not specified
+    if args.num_workers is None:
+        args.num_workers = mp.cpu_count()
+    
+    print("=" * 80)
+    print("Parallel VLM Attention Visualization")
+    print("=" * 80)
+    print(f"Eval folder: {args.eval_folder}")
+    print(f"Task range: {args.task_name}_0 to {args.task_name}_{args.max_task_id}")
+    print(f"Episode range: 0 to {args.max_episode_id}")
+    print(f"Layers: {args.layers}")
+    print(f"Tokens: {args.tokens if args.tokens else 'Aggregate all'}")
+    print(f"Heads: {args.heads if args.heads else 'Aggregate all'}")
+    print(f"Timesteps: {len(args.timesteps)} steps")
+    print(f"Workers: {args.num_workers}")
+    print("=" * 80)
+    
+    # Generate all combinations
+    print("\nGenerating parameter combinations...")
+    combinations = generate_all_combinations(
+        eval_folder=args.eval_folder,
+        task_name=args.task_name,
+        max_task_id=args.max_task_id,
+        max_episode_id=args.max_episode_id,
+        layers=args.layers,
+        tokens=args.tokens,
+        heads=args.heads,
+        timesteps=args.timesteps,
+        head_agg=args.head_aggregation,
+        token_agg=args.token_aggregation,
+        alpha=args.alpha,
+        colormap=args.colormap,
+    )
+    
+    total_combinations = len(combinations)
+    print(f"Total combinations to process: {total_combinations}")
+    
+    if total_combinations == 0:
+        print("No valid combinations found. Check file paths.")
+        return
+    
+    # Process in parallel
+    print(f"\nProcessing with {args.num_workers} workers...")
+    print("Progress: ", end="", flush=True)
+    
+    with mp.Pool(processes=args.num_workers) as pool:
+        results = []
+        for i, result in enumerate(pool.imap_unordered(visualize_one_combination, combinations)):
+            results.append(result)
+            
+            # Progress indicator (every 10%)
+            if (i + 1) % max(1, total_combinations // 10) == 0:
+                progress = (i + 1) / total_combinations * 100
+                print(f"{progress:.0f}% ", end="", flush=True)
+    
+    print("\n")
+    
+    # Summary
+    successes = sum(1 for success, _ in results if success)
+    failures = sum(1 for success, _ in results if not success)
+    
+    print("=" * 80)
+    print("Summary")
+    print("=" * 80)
+    print(f"✓ Successful: {successes} / {total_combinations}")
+    print(f"✗ Failed: {failures} / {total_combinations}")
+    
+    if failures > 0:
+        print("\nFailed combinations (first 10):")
+        failed_messages = [msg for success, msg in results if not success]
+        for msg in failed_messages[:10]:
+            print(f"  - {msg}")
+    
+    print("=" * 80)
+
+
+if __name__ == "__main__":
+    main()

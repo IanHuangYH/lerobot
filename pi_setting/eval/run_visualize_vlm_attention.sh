@@ -43,17 +43,18 @@
 # -----------------------------------------------------------------------------
 
 # Which evaluation folder to process
-EVAL_FOLDER="quick_test_vlm_attention_1"
+EVAL_FOLDER="uncertainty_quantification/eval_log/vlm_attention_object_all" #eval_logs/quick_test_vlm_attention_1
+TASK_NAME="libero_object"
 
 # Task range to process
-EVAL_SCENE_INDEX=0      # Max task ID (0-9 for libero_object/spatial/goal)
-EVAL_TASK_AMOUNT=1      # Max episode per task
+EVAL_SCENE_INDEX=9      # Max task ID (0-9 for per taks, e.g., object_0 to object_9)
+EVAL_TASK_AMOUNT=2      # Max episode per task
 
 # Which rollout steps to visualize
-TIMESTEPS=(30 40 50 60 70 80 90 100 110 120 130 140)  # Visualize at these rollout steps (0 = prefix encoding, 10/20/30 = during execution)
+TIMESTEPS=(0 10 20 30 40 50 60 70 80 90 100 110 120 130 140)  # Visualize at these rollout steps (0 = prefix encoding, 10/20/30 = during execution)
 
 # Visualization parameters
-LAYERS=(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17)         # Which transformer layers to visualize (0-17, can specify multiple)
+LAYERS=(17 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0)         # Which transformer layers to visualize (0-17, can specify multiple)
 HEAD_AGG="min"          # How to aggregate attention heads: mean/max/sum
 TOKEN_AGG="mean"         # How to aggregate task tokens: mean/max/sum
 ALPHA=0.5                # Overlay transparency (0=transparent, 1=opaque)
@@ -62,7 +63,7 @@ COLORMAP="hot"           # Matplotlib colormap: hot/viridis/jet/etc
 # Optional: Visualize specific tokens (leave empty for aggregated view)
 # Example: SPECIFIC_TOKEN_IDXS=(773 774 780)  # for 'alphabet', 'soup', 'basket' tokens
 # Leave empty or set to () to aggregate all task tokens with TOKEN_AGG
-SPECIFIC_TOKEN_IDXS=(770 773 774 775 776 780)    # Can specify multiple token indices to loop through
+SPECIFIC_TOKEN_IDXS=(774 776 770 773  775  780)    # Can specify multiple token indices to loop through
 # tokens for "pick up the alphabet soup and place it in the basket":
 # Token 768: 'Task           ' (chars   0-  4)
 #   Token 769: ':              ' (chars   4-  5)
@@ -149,79 +150,79 @@ for LAYER in "${LAYERS[@]}"; do
                 echo "    ------------------------------------------------------------------------"
             fi
 
-# Loop through tasks
-for TASK_ID in $(seq 0 $EVAL_SCENE_INDEX); do
-    TASK_NAME="libero_object_${TASK_ID}"
-    
-    echo ""
-    echo "--------------------------------------------------------------------------------"
-    echo "Task: $TASK_NAME (ID: $TASK_ID)"
-    echo "--------------------------------------------------------------------------------"
-    
-    # Loop through episodes
-    for EPISODE_ID in $(seq 0 $((EVAL_TASK_AMOUNT-1))); do
-        EPISODE_NUM=$(printf "%05d" $EPISODE_ID)
-        
-        # Define file paths
-        ATTENTION_FILE="eval_logs/${EVAL_FOLDER}/vlm_attention/${TASK_NAME}/episode_${EPISODE_NUM}_vlm_attention.pt"
-        VIDEO_FILE="eval_logs/${EVAL_FOLDER}/videos/${TASK_NAME}/eval_episode_${EPISODE_NUM}.mp4"
-        OUTPUT_DIR="eval_logs/${EVAL_FOLDER}/vlm_attention/${TASK_NAME}/viz_episode_${EPISODE_NUM}"
-        
-        # Check if files exist
-        if [ ! -f "$ATTENTION_FILE" ]; then
-            echo "  Episode ${EPISODE_NUM}: SKIP (VLM attention file not found)"
-            continue
-        fi
-        
-        if [ ! -f "$VIDEO_FILE" ]; then
-            echo "  Episode ${EPISODE_NUM}: SKIP (video file not found)"
-            continue
-        fi
-        
-        echo "  Episode ${EPISODE_NUM}: Processing..."
-        
-        # Build command with optional specific_token_idx
-        CMD="python pi_setting/eval/visualize_vlm_attention.py \
-            --attention_file '$ATTENTION_FILE' \
-            --video_file '$VIDEO_FILE' \
-            --output_dir '$OUTPUT_DIR' \
-            --rollout_steps ${TIMESTEPS[@]} \
-            --layer $LAYER \
-            --task_name libero_object \
-            --task_id $TASK_ID \
-            --head_aggregation $HEAD_AGG \
-            --alpha $ALPHA \
-            --colormap $COLORMAP"
-        
-        # Add specific_token_idx if set (ignores TOKEN_AGG when specific token is used)
-        if [ -n "$TOKEN_IDX" ]; then
-            CMD="$CMD --specific_token_idx $TOKEN_IDX"
-            echo "          → Visualizing specific token: $TOKEN_IDX (TOKEN_AGG ignored)"
-        else
-            CMD="$CMD --token_aggregation $TOKEN_AGG"
-            echo "          → Aggregating all task tokens with: $TOKEN_AGG"
-        fi
-        
-        # Add specific_head_idx if set (ignores HEAD_AGG when specific head is used)
-        if [ -n "$HEAD_IDX" ]; then
-            CMD="$CMD --specific_head_idx $HEAD_IDX"
-            echo "          → Visualizing specific head: $HEAD_IDX (HEAD_AGG ignored)"
-        else
-            echo "          → Aggregating all attention heads with: $HEAD_AGG"
-        fi
-        
-        # Run visualization (task text auto-detected from LIBERO)
-        eval $CMD
-        
-        if [ $? -eq 0 ]; then
-            echo "  Episode ${EPISODE_NUM}: ✓ SUCCESS"
-            TOTAL_PROCESSED=$((TOTAL_PROCESSED + 1))
-        else
-            echo "  Episode ${EPISODE_NUM}: ✗ ERROR"
-            TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
-        fi
-    done
-done
+            # Loop through tasks (NOW PROPERLY NESTED!)
+            for TASK_ID in $(seq 0 $EVAL_SCENE_INDEX); do
+                TASK_NAME_ID="${TASK_NAME}_${TASK_ID}"
+                
+                echo ""
+                echo "      ----------------------------------------------------------------------"
+                echo "      Task: $TASK_NAME_ID"
+                echo "      ----------------------------------------------------------------------"
+                
+                # Loop through episodes
+                for EPISODE_ID in $(seq 0 $((EVAL_TASK_AMOUNT-1))); do
+                    EPISODE_NUM=$(printf "%05d" $EPISODE_ID)
+                    
+                    # Define file paths
+                    ATTENTION_FILE="${EVAL_FOLDER}/vlm_attention/${TASK_NAME_ID}/episode_${EPISODE_NUM}_vlm_attention.pt"
+                    VIDEO_FILE="${EVAL_FOLDER}/videos/${TASK_NAME_ID}/eval_episode_${EPISODE_NUM}.mp4"
+                    OUTPUT_DIR="${EVAL_FOLDER}/vlm_attention/${TASK_NAME_ID}/viz_episode_${EPISODE_NUM}"
+                    
+                    # Check if files exist
+                    if [ ! -f "$ATTENTION_FILE" ]; then
+                        echo "        Episode ${EPISODE_NUM}: SKIP (VLM attention file not found)"
+                        continue
+                    fi
+                    
+                    if [ ! -f "$VIDEO_FILE" ]; then
+                        echo "        Episode ${EPISODE_NUM}: SKIP (video file not found)"
+                        continue
+                    fi
+                    
+                    echo "        Episode ${EPISODE_NUM}: Processing..."
+                    
+                    # Build command with optional specific_token_idx
+                    CMD="python pi_setting/eval/visualize_vlm_attention.py \
+                        --attention_file '$ATTENTION_FILE' \
+                        --video_file '$VIDEO_FILE' \
+                        --output_dir '$OUTPUT_DIR' \
+                        --rollout_steps ${TIMESTEPS[@]} \
+                        --layer $LAYER \
+                        --task_name libero_object \
+                        --task_id $TASK_ID \
+                        --head_aggregation $HEAD_AGG \
+                        --alpha $ALPHA \
+                        --colormap $COLORMAP"
+                    
+                    # Add specific_token_idx if set (ignores TOKEN_AGG when specific token is used)
+                    if [ -n "$TOKEN_IDX" ]; then
+                        CMD="$CMD --specific_token_idx $TOKEN_IDX"
+                        echo "            → Visualizing specific token: $TOKEN_IDX (TOKEN_AGG ignored)"
+                    else
+                        CMD="$CMD --token_aggregation $TOKEN_AGG"
+                        echo "            → Aggregating all task tokens with: $TOKEN_AGG"
+                    fi
+                    
+                    # Add specific_head_idx if set (ignores HEAD_AGG when specific head is used)
+                    if [ -n "$HEAD_IDX" ]; then
+                        CMD="$CMD --specific_head_idx $HEAD_IDX"
+                        echo "            → Visualizing specific head: $HEAD_IDX (HEAD_AGG ignored)"
+                    else
+                        echo "            → Aggregating all attention heads with: $HEAD_AGG"
+                    fi
+                    
+                    # Run visualization (task text auto-detected from LIBERO)
+                    eval $CMD
+                    
+                    if [ $? -eq 0 ]; then
+                        echo "        Episode ${EPISODE_NUM}: ✓ SUCCESS"
+                        TOTAL_PROCESSED=$((TOTAL_PROCESSED + 1))
+                    else
+                        echo "        Episode ${EPISODE_NUM}: ✗ ERROR"
+                        TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
+                    fi
+                done  # End episode loop
+            done  # End task loop
 
         done  # End head loop
     done  # End token loop
@@ -242,8 +243,8 @@ echo "==========================================================================
 if [ $TOTAL_PROCESSED -gt 0 ]; then
     echo ""
     echo "Example output locations:"
-    echo "  eval_logs/${EVAL_FOLDER}/vlm_attention/libero_object_0/viz_episode_00000/"
+    echo "  ${EVAL_FOLDER}/vlm_attention/libero_object_0/viz_episode_00000/"
     echo ""
     echo "To view results:"
-    echo "  ls eval_logs/${EVAL_FOLDER}/vlm_attention/libero_object_0/viz_episode_00000/"
+    echo "  ls ${EVAL_FOLDER}/vlm_attention/libero_object_0/viz_episode_00000/"
 fi
