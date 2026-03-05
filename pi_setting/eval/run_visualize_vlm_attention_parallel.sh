@@ -15,6 +15,11 @@
 #
 # =============================================================================
 
+# Set up PYTHONPATH to include LIBERO (required for task instruction extraction)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+export PYTHONPATH="${WORKSPACE_DIR}/third_party/LIBERO:${WORKSPACE_DIR}:${PYTHONPATH}"
+
 # Configuration (same as run_visualize_vlm_attention.sh but runs in parallel)
 EVAL_FOLDER="uncertainty_quantification/eval_log/vlm_attention_object_all"
 TASK_NAME="libero_object"
