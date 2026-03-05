@@ -16,19 +16,19 @@
 # =============================================================================
 
 # Configuration (same as run_visualize_vlm_attention.sh but runs in parallel)
-EVAL_FOLDER="uncertainty_quantification/eval_log/vlm_attention_scene_variants"
-TASK_NAME="libero_object_variants"
+EVAL_FOLDER="uncertainty_quantification/eval_log/vlm_attention_object_all"
+TASK_NAME="libero_object"
 
 # Which type of VLM attention to visualize
 ATTENTION_TYPE="task"   # "task" = task-specific VLM attention, "general" = baseline with dummy task
 
 # Task/episode range
-MAX_TASK_ID=9
-MAX_EPISODE_ID=7
+MAX_TASK_ID=2
+MAX_EPISODE_ID=1
 
 # Which parameters to visualize
-LAYERS=(17 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0)  # Can specify multiple: (15 16 17)
-TOKENS=(774 776 770 773  775  780)    # Can specify multiple token indices to loop through
+LAYERS=(17)  # Can specify multiple: (15 16 17)
+TOKENS=(774)    # Can specify multiple token indices to loop through
 # tokens for "pick up the alphabet soup and place it in the basket":
 # Token 768: 'Task           ' (chars   0-  4)
 #   Token 769: ':              ' (chars   4-  5)
@@ -44,8 +44,8 @@ TOKENS=(774 776 770 773  775  780)    # Can specify multiple token indices to lo
 #   Token 779: ' the           ' (chars  47- 51)
 #   Token 780: ' basket        ' (chars  51- 58) ★
 #   Token 781: ',              ' (chars  58- 59)
-HEADS=(0 1 2 3 4 5 6 7)  # Empty () = aggregate all, or specific: (0 1 2 3 4 5 6 7)
-TIMESTEPS=(0 10 20 30 40 50 60 70 80 90 100 110 120 130 140)
+HEADS=(0)  # Empty () = aggregate all, or specific: (0 1 2 3 4 5 6 7)
+TIMESTEPS=(0 10)
 
 # Visualization settings
 HEAD_AGG="mean"
@@ -54,7 +54,9 @@ ALPHA=0.5
 COLORMAP="hot"
 
 # Parallelization
-NUM_WORKERS=8  # Set to empty "" to auto-detect CPU count
+# IMPORTANT: Attention files are very large (7GB+). Too many workers cause I/O bottleneck!
+# Recommended: 2-4 workers for large attention files to avoid disk thrashing
+NUM_WORKERS=3  # Set to empty "" to auto-detect CPU count (not recommended for large files)
 
 # =============================================================================
 # Run parallel visualization

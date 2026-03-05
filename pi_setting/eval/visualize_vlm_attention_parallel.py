@@ -88,18 +88,19 @@ def visualize_one_combination(args_tuple):
             cmd,
             capture_output=True,
             text=True,
-            timeout=60  # 60 second timeout per visualization
+            timeout=600  # 600 second (10 min) timeout per visualization - handles large 7GB+ attention files
         )
         
         if result.returncode == 0:
             return (True, identifier)
         else:
-            return (False, f"{identifier}: {result.stderr[:100]}")
+            error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+            return (False, f"{identifier}: {error_msg[:200]}")
     
     except subprocess.TimeoutExpired:
-        return (False, f"{identifier}: Timeout")
+        return (False, f"{identifier}: Timeout after 600s (consider reducing num_workers)")
     except Exception as e:
-        return (False, f"{identifier}: {str(e)[:100]}")
+        return (False, f"{identifier}: Exception - {str(e)[:200]}")
 
 
 def generate_all_combinations(
@@ -342,12 +343,19 @@ def main():
     print(f"✗ Failed: {failures} / {total_combinations}")
     
     if failures > 0:
-        print("\nFailed combinations (first 10):")
+        print(f"\nFailed combinations (showing first 50 of {failures}):")
         failed_messages = [msg for success, msg in results if not success]
-        for msg in failed_messages[:10]:
+        for msg in failed_messages[:50]:
             print(f"  - {msg}")
+        
+        if failures > 50:
+            print(f"  ... and {failures - 50} more failures")
     
     print("=" * 80)
+    
+    # Exit with error code if any failures
+    if failures > 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
