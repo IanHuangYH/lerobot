@@ -1,362 +1,488 @@
 #!/usr/bin/env python
 """
-Parallel VLM Attention Visualization
+OPTIMIZED Parallel VLM Attention Visualization (v2)
 
-This script parallelizes VLM attention visualization across multiple CPU cores.
-Supports both task-specific and general (baseline) VLM attention visualization.
+Key optimization: Load each 7GB attention file ONCE, then parallelize inner loop
+(layers/tokens/heads) using shared memory multiprocessing.
 
-Usage:
-    # Task-specific VLM attention
-    python visualize_vlm_attention_parallel.py \\
-        --eval_folder uncertainty_quantification/eval_log/vlm_attention_object_all \\
-        --task_name libero_object \\
-        --max_task_id 9 \\
-        --max_episode_id 1 \\
-        --layers 15 16 17 \\
-        --timesteps 0 10 20 30
-    
-    # General VLM attention (baseline)
-    python visualize_vlm_attention_parallel.py \\
-        --eval_folder uncertainty_quantification/eval_log/general_vlm_attention_object_all \\
-        --task_name libero_object \\
-        --max_task_id 9 \\
-        --max_episode_id 1 \\
-        --layers 15 16 17 \\
-        --timesteps 0 10 20 30 \\
-        --attention_type general
+Reduces I/O from ~4.5TB to ~70GB for typical runs while utilizing all CPU cores.
+
+Architecture:
+- Outer loop (sequential): Iterate episodes, load .pt file once
+- Inner loop (parallel): Process all layer/token/head combos with shared memory
 """
 
 import argparse
-import multiprocessing as mp
+import torch
+import torch.multiprocessing as mp
+import numpy as np
+import cv2
 from pathlib import Path
-from typing import List, Tuple
-import subprocess
+from typing import List, Tuple, Optional, Dict, Any
 import sys
+import time
+import logging
+
+# Suppress verbose LIBERO logging
+logging.getLogger('libero').setLevel(logging.WARNING)
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent))
+from token_boundary_helper import TokenBoundaryHelper
+
+# For getting LIBERO task instructions
+try:
+    from libero.libero import benchmark
+    LIBERO_TASK_SUITE_TO_CLASS = benchmark.get_benchmark_dict()
+except ImportError:
+    LIBERO_TASK_SUITE_TO_CLASS = None
 
 
-def visualize_one_combination(args_tuple):
+def get_libero_task_instruction(task_name: str, task_id: int) -> str:
+    """Get the actual task instruction from LIBERO task suite."""
+    if LIBERO_TASK_SUITE_TO_CLASS is None:
+        raise ImportError("Cannot import LIBERO. Please install lerobot[libero]")
+    
+    task_suite_class = LIBERO_TASK_SUITE_TO_CLASS.get(task_name)
+    if task_suite_class is None:
+        raise ValueError(f"Unknown task suite: {task_name}")
+    
+    # Suppress stdout during task suite creation to avoid repetitive "[info]" messages
+    import os
+    import contextlib
+    with open(os.devnull, 'w') as devnull:
+        with contextlib.redirect_stdout(devnull):
+            task_suite = task_suite_class()
+    
+    if task_id >= len(task_suite.tasks):
+        raise ValueError(f"Task ID {task_id} out of range")
+    
+    return task_suite.tasks[task_id].language
+
+
+def load_attention_file_once(attention_path: Path, attention_type: str) -> Dict[str, Any]:
     """
-    Worker function to visualize one parameter combination.
-    
-    Args:
-        args_tuple: (eval_folder, task_name, task_id, episode_id, rollout_steps,
-                    layer, attention_type, head_agg, token_agg, 
-                    alpha, colormap, specific_token_idx, specific_head_idx)
-    
-    Returns:
-        Tuple of (success: bool, message: str)
+    Load entire attention file into memory ONCE.
+    Returns dict with all rollout steps ready for parallel processing.
     """
-    (eval_folder, task_name, task_id, episode_id, rollout_steps,
-     layer, attention_type, head_agg, token_agg, 
-     alpha, colormap, specific_token_idx, specific_head_idx) = args_tuple
+    print(f"  Loading attention file ({attention_path.stat().st_size / 1e9:.1f} GB)...", flush=True)
     
-    # Build command
-    cmd = [
-        "python", "pi_setting/eval/visualize_vlm_attention.py",
-        "--eval_folder", str(eval_folder),
-        "--task_name", task_name,
-        "--task_id", str(task_id),
-        "--episode_id", str(episode_id),
-        "--rollout_steps", *[str(s) for s in rollout_steps],
-        "--layer", str(layer),
-        "--attention_type", attention_type,
-        "--head_aggregation", head_agg,
-        "--alpha", str(alpha),
-        "--colormap", colormap,
-    ]
+    data = torch.load(attention_path, map_location='cpu')
     
-    # Add optional parameters
-    if specific_token_idx is not None:
-        cmd.extend(["--specific_token_idx", str(specific_token_idx)])
-    else:
-        cmd.extend(["--token_aggregation", token_agg])
+    # Structure: data['rollout_steps'] is a list of dicts, each with 'rollout_step' and 'vlm_attention'
+    if 'rollout_steps' not in data:
+        raise KeyError(f"Missing 'rollout_steps' in attention file. Available keys: {list(data.keys())}")
     
-    if specific_head_idx is not None:
-        cmd.extend(["--specific_head_idx", str(specific_head_idx)])
+    rollout_steps = data['rollout_steps']
     
-    # Create identifier for logging
-    identifier = f"Task{task_id}_Ep{episode_id}_L{layer}"
-    if specific_token_idx is not None:
-        identifier += f"_T{specific_token_idx}"
-    if specific_head_idx is not None:
-        identifier += f"_H{specific_head_idx}"
+    # Build a dict mapping rollout_step -> attention_weights for fast lookup
+    attention_by_step = {}
+    task_text = None
     
-    print("run visualization for", identifier)
-    try:
-        # Run subprocess with suppressed output
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600  # 600 second (10 min) timeout per visualization - handles large 7GB+ attention files
-        )
+    for step_data in rollout_steps:
+        rollout_step = step_data['rollout_step']
         
-        if result.returncode == 0:
-            return (True, identifier)
+        # Extract VLM attention (key depends on attention_type)
+        if attention_type == "task":
+            if 'vlm_attention' not in step_data:
+                raise KeyError(f"Missing 'vlm_attention' in rollout step {rollout_step}")
+            vlm_attention = step_data['vlm_attention']
+        elif attention_type == "general":
+            if 'general_vlm_attention' not in step_data:
+                raise KeyError(f"Missing 'general_vlm_attention' in rollout step {rollout_step}")
+            vlm_attention = step_data['general_vlm_attention']
         else:
-            error_msg = result.stderr.strip() if result.stderr else "Unknown error"
-            return (False, f"{identifier}: {error_msg[:200]}")
+            raise ValueError(f"Unknown attention_type: {attention_type}")
+        
+        # Extract attention weights: dict mapping layer_idx -> tensor[1, heads, tokens, tokens]
+        attention_weights = vlm_attention['attention_weights']
+        
+        # Share memory for each layer's tensor for efficient multiprocessing
+        if isinstance(attention_weights, dict):
+            for layer_idx in attention_weights:
+                attention_weights[layer_idx].share_memory_()
+        else:
+            attention_weights.share_memory_()
+        
+        attention_by_step[rollout_step] = attention_weights
+        
+        # Capture task_text if available (may be None for task-specific)
+        if task_text is None:
+            task_text = vlm_attention.get('task_text', None)
     
-    except subprocess.TimeoutExpired:
-        return (False, f"{identifier}: Timeout after 600s (consider reducing num_workers)")
+    return {
+        "attention": attention_by_step,
+        "task_text": task_text,
+    }
+
+
+def process_one_visualization(args_tuple):
+    """
+    Worker function: Process one layer/token/head/timestep combination.
+    Takes pre-loaded attention data from shared memory.
+    
+    Returns: (success: bool, identifier: str, error_msg: Optional[str])
+    """
+    (shared_attention, shared_task_text, video_path, output_dir,
+     task_name, task_id, episode_id, rollout_step, layer,
+     token_idx, head_idx, head_agg, alpha, colormap) = args_tuple
+    
+    identifier = f"Task{task_id}_Ep{episode_id}_L{layer}_Step{rollout_step}"
+    if token_idx is not None:
+        identifier += f"_T{token_idx}"
+    if head_idx is not None:
+        identifier += f"_H{head_idx}"
+    
+    try:
+        # Get attention for this rollout step
+        if rollout_step not in shared_attention:
+            return (False, identifier, f"Rollout step {rollout_step} not in attention data")
+        
+        # attention_weights is a dict: {layer_idx: tensor[1, heads, tokens, tokens]}
+        attention_weights = shared_attention[rollout_step]
+        
+        # Validate layer
+        if layer not in attention_weights:
+            available_layers = list(attention_weights.keys())
+            return (False, identifier, f"Layer {layer} not found. Available: {available_layers}")
+        
+        # Extract specific layer: [1, heads, tokens, tokens] or [heads, tokens, tokens]
+        layer_attn = attention_weights[layer]
+        
+        # Remove batch dimension if present
+        if layer_attn.dim() == 4:
+            layer_attn = layer_attn[0]  # [heads, tokens, tokens]
+        
+        num_heads, num_tokens, _ = layer_attn.shape
+        
+        # Get task token boundaries
+        task_text = get_libero_task_instruction(task_name.replace("_variants", ""), task_id)
+        helper = TokenBoundaryHelper()
+        
+        if shared_task_text is None:
+            full_text = f"Task: {task_text}, State: " + " ".join(["128"] * 7) + " 1.0"
+        else:
+            full_text = shared_task_text
+        
+        boundaries = helper.find_token_boundaries(full_text, num_img_tokens=768)
+        task_start, task_end = boundaries['task']
+        
+        # Validate token index
+        if token_idx is not None:
+            if token_idx < task_start or token_idx >= task_end:
+                return (False, identifier, f"Token {token_idx} outside task range [{task_start}, {task_end})")
+        
+        # Validate head index
+        if head_idx is not None:
+            if head_idx >= num_heads:
+                return (False, identifier, f"Head {head_idx} out of range (max: {num_heads-1})")
+        
+        # Load video frame
+        cap = cv2.VideoCapture(str(video_path))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, rollout_step)
+        ret, frame = cap.read()
+        cap.release()
+        
+        if not ret:
+            return (False, identifier, f"Failed to load video frame {rollout_step}")
+        
+        # Process both cameras
+        cameras = {
+            "agentview": (0, frame[:, :384]),
+            "wrist": (1, frame[:, 384:])
+        }
+        
+        num_img_patches = 256  # 16x16 grid
+        num_cameras = 3
+        
+        for cam_name, (cam_index, cam_frame) in cameras.items():
+            # Calculate image patch range for this camera
+            img_start = cam_index * num_img_patches
+            img_end = img_start + num_img_patches
+            
+            # Extract task tokens → image patches attention
+            # [heads, tokens, tokens] → [heads, task_tokens, img_patches]
+            task_to_img = layer_attn[:, task_start:task_end, img_start:img_end]
+            
+            # Handle specific token or aggregate
+            if token_idx is not None:
+                relative_idx = token_idx - task_start
+                task_to_img = task_to_img[:, relative_idx, :]  # [heads, img_patches]
+            else:
+                # Aggregate across task tokens
+                if head_agg == "mean":
+                    task_to_img = task_to_img.mean(dim=1)
+                elif head_agg == "max":
+                    task_to_img = task_to_img.max(dim=1)[0]
+                elif head_agg == "sum":
+                    task_to_img = task_to_img.sum(dim=1)
+                else:  # min
+                    task_to_img = task_to_img.min(dim=1)[0]
+            
+            # Handle specific head or aggregate
+            if head_idx is not None:
+                task_to_img = task_to_img[head_idx]  # [img_patches]
+            else:
+                if head_agg == "mean":
+                    task_to_img = task_to_img.mean(dim=0)
+                elif head_agg == "max":
+                    task_to_img = task_to_img.max(dim=0)[0]
+                elif head_agg == "sum":
+                    task_to_img = task_to_img.sum(dim=0)
+                else:  # min
+                    task_to_img = task_to_img.min(dim=0)[0]
+            
+            # Reshape to 2D grid [16, 16]
+            grid_size = int(np.sqrt(num_img_patches))
+            heatmap = task_to_img.reshape(grid_size, grid_size).float().cpu().numpy()
+            
+            # Normalize to [0, 1]
+            heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+            # Resize heatmap to match camera resolution
+            heatmap_resized = cv2.resize(heatmap, (cam_frame.shape[1], cam_frame.shape[0]))
+            
+            # Apply colormap
+            heatmap_colored = cv2.applyColorMap(
+                (heatmap_resized * 255).astype(np.uint8),
+                getattr(cv2, f"COLORMAP_{colormap.upper()}")
+            )
+            
+            # Overlay
+            overlay = cv2.addWeighted(cam_frame, 1 - alpha, heatmap_colored, alpha, 0)
+            
+            # Save
+            filename = f"timestep_{rollout_step:03d}_{cam_name}_layer{layer}"
+            if token_idx is not None:
+                filename += f"_token{token_idx}"
+            if head_idx is not None:
+                filename += f"_head{head_idx}"
+            filename += ".png"
+            
+            output_path = output_dir / filename
+            cv2.imwrite(str(output_path), overlay)
+        
+        return (True, identifier, None)
+    
     except Exception as e:
-        return (False, f"{identifier}: Exception - {str(e)[:200]}")
+        import traceback
+        error_msg = f"{str(e)}\n{traceback.format_exc()}"
+        return (False, identifier, error_msg)
 
 
-def generate_all_combinations(
+def process_one_episode(
     eval_folder: Path,
     task_name: str,
-    max_task_id: int,
-    max_episode_id: int,
+    task_id: int,
+    episode_id: int,
     layers: List[int],
     tokens: List[int],
     heads: List[int],
     timesteps: List[int],
     attention_type: str,
     head_agg: str,
-    token_agg: str,
     alpha: float,
     colormap: str,
-) -> List[Tuple]:
+    num_workers: int,
+    episode_num: int = None,
+    total_episodes: int = None,
+):
     """
-    Generate all parameter combinations to visualize.
+    Process one episode: Load attention file once, parallelize all combos.
     
-    Returns:
-        List of argument tuples for visualize_one_combination()
+    Returns: (success_count, fail_count, errors)
     """
-    combinations = []
+    episode_name = f"{task_name}_{task_id}/episode_{episode_id:05d}"
     
-    # Determine folder name based on attention_type
+    # Show episode progress in outer loop
+    if episode_num is not None and total_episodes is not None:
+        print(f"\n{'='*80}")
+        print(f"Episode {episode_num}/{total_episodes}: {episode_name}")
+        print(f"{'='*80}")
+    else:
+        print(f"\n{'='*80}")
+        print(f"Processing: {episode_name}")
+        print(f"{'='*80}")
+    
+    # Setup paths
     if attention_type == "task":
         attention_folder = "vlm_attention"
-        attention_filename = "episode_{}_vlm_attention.pt"
-    else:  # general
+        attention_filename = f"episode_{episode_id:05d}_vlm_attention.pt"
+    else:
         attention_folder = "general_vlm_attention"
-        attention_filename = "episode_{}_general_vlm_attention.pt"
+        attention_filename = f"episode_{episode_id:05d}_general_vlm_attention.pt"
     
+    task_name_id = f"{task_name}_{task_id}"
+    attention_path = eval_folder / attention_folder / task_name_id / attention_filename
+    video_path = eval_folder / "videos" / task_name_id / f"eval_episode_{episode_id:05d}.mp4"
+    output_dir = eval_folder / attention_folder / task_name_id / f"viz_episode_{episode_id:05d}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Load attention file ONCE
+    start_time = time.time()
+    try:
+        shared_data = load_attention_file_once(attention_path, attention_type)
+        load_time = time.time() - start_time
+        print(f"  ✓ Loaded in {load_time:.1f}s")
+    except Exception as e:
+        print(f"  ✗ Failed to load attention file: {e}")
+        return (0, 1, [f"Failed to load {attention_path}: {str(e)}"])
+    
+    # Generate all combinations
+    token_list = tokens if tokens else [None]
+    head_list = heads if heads else [None]
+    
+    combinations = []
     for layer in layers:
-        for task_id in range(max_task_id + 1):
-            task_name_id = f"{task_name}_{task_id}"
-            
-            for episode_id in range(max_episode_id + 1):
-                episode_num = f"{episode_id:05d}"
-                
-                # Check if files exist
-                attention_file = eval_folder / attention_folder / task_name_id / attention_filename.format(episode_num)
-                video_file = eval_folder / "videos" / task_name_id / f"eval_episode_{episode_num}.mp4"
-                
-                if not attention_file.exists() or not video_file.exists():
-                    continue
-                
-                # Determine token iteration
-                token_indices = tokens if tokens else [None]
-                
-                # Determine head iteration
-                head_indices = heads if heads else [None]
-                
-                for token_idx in token_indices:
-                    for head_idx in head_indices:
-                        combinations.append((
-                            eval_folder,
-                            task_name,
-                            task_id,
-                            episode_id,
-                            timesteps,
-                            layer,
-                            attention_type,
-                            head_agg,
-                            token_agg,
-                            alpha,
-                            colormap,
-                            token_idx,
-                            head_idx,
-                        ))
+        for rollout_step in timesteps:
+            for token_idx in token_list:
+                for head_idx in head_list:
+                    combinations.append((
+                        shared_data["attention"],
+                        shared_data["task_text"],
+                        video_path,
+                        output_dir,
+                        task_name,
+                        task_id,
+                        episode_id,
+                        rollout_step,
+                        layer,
+                        token_idx,
+                        head_idx,
+                        head_agg,
+                        alpha,
+                        colormap,
+                    ))
     
-    return combinations
+    total_combos = len(combinations)
+    print(f"  Processing {total_combos} visualizations with {num_workers} workers...")
+    print(f"  (Errors will be shown immediately)\n")
+    
+    # Process in parallel
+    success_count = 0
+    fail_count = 0
+    errors = []
+    
+    with mp.Pool(processes=num_workers) as pool:
+        for i, (success, identifier, error_msg) in enumerate(
+            pool.imap_unordered(process_one_visualization, combinations)
+        ):
+            if success:
+                success_count += 1
+                if (i + 1) % max(1, total_combos // 10) == 0:  # Progress every 10%
+                    print(f"    [{i+1}/{total_combos}] {success_count} ✓, {fail_count} ✗")
+            else:
+                fail_count += 1
+                print(f"\n  ✗ {identifier}")
+                print(f"    ERROR: {error_msg}\n")
+                errors.append(f"{identifier}: {error_msg}")
+    
+    process_time = time.time() - start_time
+    print(f"\n  Summary: {success_count} ✓, {fail_count} ✗ ({process_time:.1f}s total)")
+    
+    return (success_count, fail_count, errors)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Parallel VLM attention visualization"
+        description="Optimized parallel VLM attention visualization (v2)"
     )
-    parser.add_argument(
-        "--eval_folder",
-        type=Path,
-        required=True,
-        help="Evaluation output folder"
-    )
-    parser.add_argument(
-        "--task_name",
-        type=str,
-        default="libero_object",
-        help="Task name (default: libero_object)"
-    )
-    parser.add_argument(
-        "--max_task_id",
-        type=int,
-        default=9,
-        help="Maximum task ID to process (default: 9)"
-    )
-    parser.add_argument(
-        "--max_episode_id",
-        type=int,
-        default=1,
-        help="Maximum episode ID to process (default: 1)"
-    )
-    parser.add_argument(
-        "--attention_type",
-        type=str,
-        default="task",
-        choices=["task", "general"],
-        help="Type of VLM attention: 'task' (task-specific) or 'general' (baseline, default: task)"
-    )
-    parser.add_argument(
-        "--layers",
-        type=int,
-        nargs='+',
-        default=[17],
-        help="Layers to visualize (default: 17)"
-    )
-    parser.add_argument(
-        "--tokens",
-        type=int,
-        nargs='*',
-        default=[],
-        help="Specific token indices to visualize (empty = aggregate all)"
-    )
-    parser.add_argument(
-        "--heads",
-        type=int,
-        nargs='*',
-        default=[],
-        help="Specific head indices to visualize (empty = aggregate all)"
-    )
-    parser.add_argument(
-        "--timesteps",
-        type=int,
-        nargs='+',
-        default=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140],
-        help="Timesteps to visualize"
-    )
-    parser.add_argument(
-        "--head_aggregation",
-        type=str,
-        default="mean",
-        choices=["mean", "max", "sum", "min"],
-        help="Head aggregation method (default: mean)"
-    )
-    parser.add_argument(
-        "--token_aggregation",
-        type=str,
-        default="mean",
-        choices=["mean", "max", "sum", "min"],
-        help="Token aggregation method (default: mean)"
-    )
-    parser.add_argument(
-        "--alpha",
-        type=float,
-        default=0.5,
-        help="Overlay alpha (default: 0.5)"
-    )
-    parser.add_argument(
-        "--colormap",
-        type=str,
-        default="hot",
-        help="Colormap (default: hot)"
-    )
-    parser.add_argument(
-        "--num_workers",
-        type=int,
-        default=None,
-        help="Number of parallel workers (default: CPU count)"
-    )
+    parser.add_argument("--eval_folder", type=Path, required=True)
+    parser.add_argument("--task_name", type=str, default="libero_object")
+    parser.add_argument("--max_task_id", type=int, default=9)
+    parser.add_argument("--max_episode_id", type=int, default=1)
+    parser.add_argument("--attention_type", type=str, default="task", choices=["task", "general"])
+    parser.add_argument("--layers", type=int, nargs='+', default=[17])
+    parser.add_argument("--tokens", type=int, nargs='*', default=[])
+    parser.add_argument("--heads", type=int, nargs='*', default=[])
+    parser.add_argument("--timesteps", type=int, nargs='+', 
+                       default=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140])
+    parser.add_argument("--head_aggregation", type=str, default="mean", 
+                       choices=["mean", "max", "sum", "min"])
+    parser.add_argument("--token_aggregation", type=str, default="mean",
+                       choices=["mean", "max", "sum", "min"])
+    parser.add_argument("--alpha", type=float, default=0.5)
+    parser.add_argument("--colormap", type=str, default="hot")
+    parser.add_argument("--num_workers", type=int, default=None,
+                       help="Workers for INNER loop (default: CPU count)")
     
     args = parser.parse_args()
     
-    # Auto-detect CPU count if not specified
+    # Auto-detect CPU count
     if args.num_workers is None:
         args.num_workers = mp.cpu_count()
     
+    # Calculate stats
+    token_count = len(args.tokens) if args.tokens else 1
+    head_count = len(args.heads) if args.heads else 1
+    combos_per_episode = len(args.layers) * token_count * head_count * len(args.timesteps)
+    total_episodes = (args.max_task_id + 1) * (args.max_episode_id + 1)
+    
     print("=" * 80)
-    print(f"Parallel VLM Attention Visualization ({args.attention_type.capitalize()})")
+    print(f"OPTIMIZED Parallel VLM Attention Visualization v2")
     print("=" * 80)
+    print(f"Strategy: Load each .pt file ONCE, parallelize inner loop")
     print(f"Attention type: {args.attention_type}")
     print(f"Eval folder: {args.eval_folder}")
-    print(f"Task range: {args.task_name}_0 to {args.task_name}_{args.max_task_id}")
-    print(f"Episode range: 0 to {args.max_episode_id}")
+    print(f"Tasks: 0-{args.max_task_id}, Episodes: 0-{args.max_episode_id}")
     print(f"Layers: {args.layers}")
     print(f"Tokens: {args.tokens if args.tokens else 'Aggregate all'}")
     print(f"Heads: {args.heads if args.heads else 'Aggregate all'}")
     print(f"Timesteps: {len(args.timesteps)} steps")
-    print(f"Workers: {args.num_workers}")
+    print(f"Visualizations per episode: {combos_per_episode}")
+    print(f"Total episodes: {total_episodes}")
+    print(f"Inner loop workers: {args.num_workers} (utilizing all CPU cores!)")
     print("=" * 80)
     
-    # Generate all combinations
-    print("\nGenerating parameter combinations...")
-    combinations = generate_all_combinations(
-        eval_folder=args.eval_folder,
-        task_name=args.task_name,
-        max_task_id=args.max_task_id,
-        max_episode_id=args.max_episode_id,
-        layers=args.layers,
-        tokens=args.tokens,
-        heads=args.heads,
-        timesteps=args.timesteps,
-        attention_type=args.attention_type,
-        head_agg=args.head_aggregation,
-        token_agg=args.token_aggregation,
-        alpha=args.alpha,
-        colormap=args.colormap,
-    )
+    # Process episodes sequentially (could add 2-3 parallel episodes if needed)
+    total_success = 0
+    total_fail = 0
+    all_errors = []
+    episode_counter = 0
     
-    total_combinations = len(combinations)
-    print(f"Total combinations to process: {total_combinations}")
-    
-    if total_combinations == 0:
-        print("No valid combinations found. Check file paths.")
-        return
-    
-    # Process in parallel
-    print(f"\nProcessing with {args.num_workers} workers...")
-    print("Progress: ", end="", flush=True)
-    
-    with mp.Pool(processes=args.num_workers) as pool:
-        results = []
-        for i, result in enumerate(pool.imap_unordered(visualize_one_combination, combinations)):
-            results.append(result)
+    for task_id in range(args.max_task_id + 1):
+        for episode_id in range(args.max_episode_id + 1):
+            episode_counter += 1
+            success, fail, errors = process_one_episode(
+                eval_folder=args.eval_folder,
+                task_name=args.task_name,
+                task_id=task_id,
+                episode_id=episode_id,
+                layers=args.layers,
+                tokens=args.tokens,
+                heads=args.heads,
+                timesteps=args.timesteps,
+                attention_type=args.attention_type,
+                head_agg=args.head_aggregation,
+                alpha=args.alpha,
+                colormap=args.colormap,
+                num_workers=args.num_workers,
+                episode_num=episode_counter,
+                total_episodes=total_episodes,
+            )
             
-            # Progress indicator (every 10%)
-            if (i + 1) % max(1, total_combinations // 10) == 0:
-                progress = (i + 1) / total_combinations * 100
-                print(f"{progress:.0f}% ", end="", flush=True)
+            total_success += success
+            total_fail += fail
+            all_errors.extend(errors)
     
-    print("\n")
-    
-    # Summary
-    successes = sum(1 for success, _ in results if success)
-    failures = sum(1 for success, _ in results if not success)
-    
+    # Final summary
+    total_viz = total_success + total_fail
+    print("\n" + "=" * 80)
+    print("FINAL SUMMARY")
     print("=" * 80)
-    print("Summary")
-    print("=" * 80)
-    print(f"✓ Successful: {successes} / {total_combinations}")
-    print(f"✗ Failed: {failures} / {total_combinations}")
+    print(f"✓ Successful: {total_success} / {total_viz}")
+    print(f"✗ Failed: {total_fail} / {total_viz}")
+    print(f"Episodes processed: {total_episodes}")
     
-    if failures > 0:
-        print(f"\nFailed combinations (showing first 50 of {failures}):")
-        failed_messages = [msg for success, msg in results if not success]
-        for msg in failed_messages[:50]:
-            print(f"  - {msg}")
-        
-        if failures > 50:
-            print(f"  ... and {failures - 50} more failures")
+    if total_fail > 0:
+        print(f"\n⚠️  {total_fail} visualizations failed. See errors above.")
     
     print("=" * 80)
     
-    # Exit with error code if any failures
-    if failures > 0:
+    if total_fail > 0:
         sys.exit(1)
 
 
 if __name__ == "__main__":
+    # Required for torch multiprocessing
+    mp.set_start_method('spawn', force=True)
     main()

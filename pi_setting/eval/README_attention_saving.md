@@ -739,17 +739,116 @@ python pi_setting/eval/visualize_vlm_attention.py \
 
 **Batch processing:**
 
-Process multiple episodes at once using the batch runner:
+Process multiple episodes at once using the optimized parallel batch runner:
 
 ```bash
-bash pi_setting/eval/run_visualize_vlm_attention.sh
+bash pi_setting/eval/run_visualize_vlm_attention_parallel.sh
 ```
+
+**Note**: For backwards compatibility, a single-process version (`run_visualize_vlm_attention.sh`) is also available, but the parallel version is **strongly recommended** for better performance (64× faster I/O).
 
 Edit the script to configure:
 - `EVAL_FOLDER`: Which evaluation run to visualize
 - `TIMESTEPS`: Which rollout steps to visualize
 - `SPECIFIC_TOKEN_IDX`: Specific token to visualize (leave empty for aggregated view)
 - `TOKEN_AGG`: Aggregation strategy (mean/max/sum) - ignored if SPECIFIC_TOKEN_IDX is set
+
+#### Parallel Visualization Architecture
+
+The VLM attention visualization system uses an **optimized parallel processing architecture** to efficiently handle large attention files:
+
+**Key optimization strategy:**
+- **Old approach**: Each worker subprocess loads the entire 7GB attention file independently
+  - For 64 visualizations = 64 × 7GB = **448GB total I/O per episode**
+  - Severe I/O bottleneck on network storage
+  - Underutilized CPU cores due to I/O wait
+
+- **Current approach**: Load attention file once, parallelize visualization with shared memory
+  - Load 7GB file once, share tensors across worker processes using `torch.multiprocessing`
+  - Workers process individual layer/token/head combinations in parallel
+  - **64× I/O reduction**: 7GB vs 448GB per episode
+
+**Architecture details:**
+
+```python
+# Outer loop (sequential): Process episodes one at a time
+for episode in episodes:
+    # Load attention file ONCE into shared memory
+    attention_data = load_attention_file_once(episode)
+    
+    # Call share_memory_() on all tensors for zero-copy sharing
+    for tensor in attention_data.values():
+        tensor.share_memory_()
+    
+    # Inner loop (parallel): Process all layer/token/head combinations
+    combinations = generate_all_combinations(layers, tokens, heads, timesteps)
+    
+    # Use multiprocessing.Pool for parallel workers
+    with mp.Pool(num_workers) as pool:
+        results = pool.imap_unordered(process_one_viz, combinations)
+```
+
+**Performance improvements:**
+- **I/O reduction**: 64× less file I/O (7GB vs 448GB per episode)
+- **CPU utilization**: All cores active during visualization (not blocked on I/O)
+- **Memory efficiency**: Single copy of attention data shared across workers
+- **Scalability**: Easily process thousands of visualizations on multi-core systems
+
+**Progress monitoring:**
+
+The system provides detailed progress tracking:
+
+```
+================================================================================
+Episode 3/20: libero_object_2/episode_00000
+================================================================================
+  Loading attention file (6.8 GB)...
+  ✓ Loaded in 12.3s
+  Processing 704 visualizations with 16 workers...
+
+    [70/704] 68 ✓, 2 ✗
+    [140/704] 135 ✓, 5 ✗
+    [210/704] 205 ✓, 5 ✗
+    ...
+
+  Summary: 690 ✓, 14 ✗ (45.2s total)
+```
+
+**Features:**
+- **Outer loop**: Shows episode progress (Episode X/Y) across all tasks
+- **Inner loop**: Real-time progress every 10% with success/fail counts
+- **Error reporting**: Immediate display of failures with full tracebacks
+- **Clean output**: Suppresses repetitive LIBERO info messages
+
+**Error handling:**
+
+Errors are reported in real-time as they occur:
+
+```
+  ✗ Task0_Ep0_L17_Step0_T774_H7
+    ERROR: Token 774 outside task range [768, 770)
+    
+  ✗ Task0_Ep0_L16_Step10_T780_H3  
+    ERROR: Failed to load video frame 10
+```
+
+This allows you to:
+- Identify issues immediately without waiting for full batch completion
+- See exact failure reasons with stack traces
+- Continue processing remaining visualizations even after failures
+
+**Configuration:**
+
+Number of parallel workers can be configured in `run_visualize_vlm_attention_parallel.sh`:
+
+```bash
+NUM_WORKERS=16  # Default: auto-detect CPU count
+```
+
+**Recommendations:**
+- **Default (auto)**: Uses all available CPU cores (good for most cases)
+- **Conservative**: Use 50-75% of cores if system is under load
+- **Storage-limited**: More workers won't help if I/O is still bottleneck (but optimization already fixes this)
 
 **Output structure:**
 
@@ -863,10 +962,10 @@ TOKENS MATCHING YOUR KEYWORDS: ['alphabet', 'soup', 'basket']
 Based on Step 1 output, visualize interesting tokens:
 
 ```bash
-# In run_visualize_vlm_attention.sh:
+# In run_visualize_vlm_attention_parallel.sh:
 SPECIFIC_TOKEN_IDX=774  # "soup" token
 
-./pi_setting/eval/run_visualize_vlm_attention.sh
+./pi_setting/eval/run_visualize_vlm_attention_parallel.sh
 ```
 
 Or directly:
@@ -933,7 +1032,7 @@ python pi_setting/eval/visualize_vlm_attention.py \
     --task_text "pick up the alphabet soup and place it in the basket"
 
 # Or batch process
-bash pi_setting/eval/run_visualize_vlm_attention.sh
+bash pi_setting/eval/run_visualize_vlm_attention_parallel.sh
 ```
 
 **4. Analyze attention patterns:**
@@ -983,7 +1082,7 @@ This is because:
 
 ### Creating Attention Grid Visualizations
 
-After generating individual attention visualizations with `run_visualize_vlm_attention.sh`, you can combine them into comprehensive grid layouts to analyze how attention patterns evolve across transformer layers and attention heads.
+After generating individual attention visualizations with `run_visualize_vlm_attention_parallel.sh`, you can combine them into comprehensive grid layouts to analyze how attention patterns evolve across transformer layers and attention heads.
 
 #### What is an Attention Grid?
 
@@ -1019,17 +1118,17 @@ This enables systematic analysis:
 
 **Step 1: Generate individual visualizations**
 
-First, create individual attention maps using `run_visualize_vlm_attention.sh`:
+First, create individual attention maps using `run_visualize_vlm_attention_parallel.sh`:
 
 ```bash
 # Configure to save all layers and heads
-# Edit run_visualize_vlm_attention.sh:
+# Edit run_visualize_vlm_attention_parallel.sh:
 LAYERS=(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17)
 SPECIFIC_HEAD_IDXS=(0 1 2 3 4 5 6 7)
 SPECIFIC_TOKEN_IDXS=(774)  # "soup" token
 
 # Run visualization
-bash pi_setting/eval/run_visualize_vlm_attention.sh
+bash pi_setting/eval/run_visualize_vlm_attention_parallel.sh
 ```
 
 This creates individual PNGs like:
@@ -1146,11 +1245,11 @@ bash pi_setting/eval/eval_libero_quick_test.sh  # With save_vlm_attention_maps=t
 bash pi_setting/eval/run_demo_specific_token_attention.sh
 
 # Step 3: Generate individual visualizations for all layers/heads
-# Edit run_visualize_vlm_attention.sh:
+# Edit run_visualize_vlm_attention_parallel.sh:
 #   LAYERS=(0 1 2 ... 17)  # All layers
 #   SPECIFIC_HEAD_IDXS=(0 1 ... 7)  # All heads
 #   SPECIFIC_TOKEN_IDXS=(774)  # From Step 2
-bash pi_setting/eval/run_visualize_vlm_attention.sh
+bash pi_setting/eval/run_visualize_vlm_attention_parallel.sh
 
 # Step 4: Create grid visualizations
 bash pi_setting/eval/create_attention_grid.sh
@@ -1200,7 +1299,7 @@ For task "pick up the alphabet soup and place it in the basket" with token 774 (
 **Q: "Missing" gray boxes in grid**
 
 **A:** Some individual visualizations weren't created. Check:
-1. Did `run_visualize_vlm_attention.sh` complete successfully?
+1. Did `run_visualize_vlm_attention_parallel.sh` complete successfully?
 2. Are all layer/head combinations in `LAYERS` and `SPECIFIC_HEAD_IDXS`?
 3. Check input directory for missing PNG files
 
@@ -1266,4 +1365,95 @@ Instead of manually providing `--task_text`.
 ```python
 model.paligemma.language_model.config._attn_implementation = "eager"
 ```
+
+**Q: TypeError: Got unsupported ScalarType BFloat16**
+
+**Cause**: NumPy doesn't support BFloat16 tensors directly.
+
+**Solution**: The visualization script automatically converts to float32 before numpy conversion:
+```python
+heatmap = task_to_img.reshape(grid_size, grid_size).float().cpu().numpy()
+```
+
+This is already implemented in the current version.
+
+**Q: AttributeError: 'TokenBoundaryHelper' object has no attribute 'get_task_token_boundaries'**
+
+**Cause**: Incorrect method name. The correct method is `find_token_boundaries()`.
+
+**Solution**: Use the correct API:
+```python
+helper = TokenBoundaryHelper()
+boundaries = helper.find_token_boundaries(full_text, num_img_tokens=768)
+task_start, task_end = boundaries['task']
+```
+
+**Q: Parallel visualization takes too long / workers not starting**
+
+**Cause**: Multiple potential issues:
+1. Timeout too short (old default was 60s, jobs took 137s)
+2. Each worker loading 7GB file independently (I/O bottleneck)
+
+**Solution**: The current optimized implementation fixes both:
+- Timeout increased to 600s
+- Load file once and share memory across workers (64× I/O reduction)
+
+**Q: LIBERO "[info] using task orders..." messages repeating excessively**
+
+**Cause**: LIBERO prints info messages every time a task suite is instantiated.
+
+**Solution**: The visualization script suppresses these with `contextlib.redirect_stdout`:
+```python
+with open(os.devnull, 'w') as devnull:
+    with contextlib.redirect_stdout(devnull):
+        task_suite = task_suite_class()
+```
+
+This keeps output clean while preserving error messages.
+
+**Q: KeyError: 'vlm_attention' or 'rollout_steps'**
+
+**Cause**: Attention file structure mismatch or incomplete file.
+
+**Solution**: Check that:
+1. File was saved with VLM attention enabled (`--eval.save_vlm_attention_maps=true`)
+2. Evaluation completed successfully (file not truncated)
+3. Using correct attention type (`--attention_type task` vs `general`)
+
+Expected file structure:
+```python
+{
+    'rollout_steps': [
+        {
+            'rollout_step': 0,
+            'vlm_attention': {
+                'attention_weights': {layer_idx: tensor, ...},
+                'task_text': "...",
+                ...
+            }
+        },
+        ...
+    ]
+}
+```
+
+**Q: Visualization performance still slow despite optimization**
+
+**Potential causes and solutions:**
+
+1. **Network storage latency**: Initial file load still takes time
+   - Expected: 10-20s for 7GB file on network storage
+   - If >60s: Check network/storage performance
+
+2. **Video frame extraction bottleneck**: OpenCV video decoding is not parallelized efficiently
+   - Each worker opens video independently (but seeks to different frames)
+   - Future optimization: Pre-load all needed frames into shared memory
+
+3. **Too many workers**: Context switching overhead
+   - Default auto-detects CPU count (good for most cases)
+   - Try reducing to 50-75% of cores: `NUM_WORKERS=12` for 16-core system
+
+4. **Memory pressure**: Shared memory + worker memory exceeds available RAM
+   - Monitor with `htop` or `free -h`
+   - Reduce number of workers or process fewer episodes in parallel
 
