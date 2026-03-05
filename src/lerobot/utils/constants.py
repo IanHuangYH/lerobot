@@ -75,6 +75,11 @@ LOOKAHEAD_BACKTRACKTABLE = 100
 # openpi
 OPENPI_ATTENTION_MASK_VALUE = -2.3819763e38  # TODO(pepijn): Modify this when extending support to fp8 models
 
+# General VLM Attention baseline task text (constant - do not use as argument)
+# This is the dummy/generic task instruction used to establish baseline attention patterns
+# without task-specific guidance. Used for comparing against task-specific attention.
+GENERAL_VLM_ATTENTION_TASK_TEXT = "task: perform the mission"
+
 # Constants for LIBERO observation keys
 LIBERO_KEY_EEF_POS = "robot_state/eef/pos"
 LIBERO_KEY_EEF_QUAT = "robot_state/eef/quat"

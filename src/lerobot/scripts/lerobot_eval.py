@@ -81,7 +81,15 @@ from lerobot.envs.utils import (
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.processor import PolicyAction, PolicyProcessorPipeline
-from lerobot.utils.constants import ACTION, DONE, OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS, OBS_STR, REWARD
+from lerobot.utils.constants import (
+    ACTION,
+    DONE,
+    GENERAL_VLM_ATTENTION_TASK_TEXT,
+    OBS_LANGUAGE_ATTENTION_MASK,
+    OBS_LANGUAGE_TOKENS,
+    OBS_STR,
+    REWARD,
+)
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.io_utils import write_video
 from lerobot.utils.random_utils import set_seed
@@ -219,7 +227,6 @@ def rollout(
     attention_dir: Path | None = None,
     vlm_attention_dir: Path | None = None,
     general_vlm_attention_dir: Path | None = None,
-    general_vlm_attention_task_text: str = "task: perform the task",
     uncertainty_dir: Path | None = None,
     batch_index: int = 0,
     n_episodes_so_far: int = 0,
@@ -467,7 +474,7 @@ def rollout(
             
             if tokenizer_step is not None:
                 tokenized = tokenizer_step.input_tokenizer(
-                    general_vlm_attention_task_text,
+                    GENERAL_VLM_ATTENTION_TASK_TEXT,
                     max_length=tokenizer_step.max_length,
                     truncation=tokenizer_step.truncation,
                     padding=tokenizer_step.padding,
@@ -480,7 +487,7 @@ def rollout(
                 dummy_observation[f"{OBS_LANGUAGE_ATTENTION_MASK}"] = tokenized["attention_mask"].to(device).to(dtype=torch.bool)
             
             # Collect general VLM attention (efficient: prefix encoding only)
-            policy.collect_general_vlm_attention(dummy_observation, dummy_task_text=general_vlm_attention_task_text)
+            policy.collect_general_vlm_attention(dummy_observation, dummy_task_text=GENERAL_VLM_ATTENTION_TASK_TEXT)
             
             # Get the collected general attention
             step_general_vlm_attention = policy.model.get_general_vlm_attention_maps()
@@ -631,7 +638,7 @@ def rollout(
                         "rollout_steps": episode_general_vlm_attention_maps,  # Only this episode's data
                         "metadata": {
                             "num_rollout_steps": len(episode_general_vlm_attention_maps),
-                            "task_text": general_vlm_attention_task_text,  # Document the dummy task used
+                            "task_text": GENERAL_VLM_ATTENTION_TASK_TEXT,  # Document the dummy task used
                         },
                     },
                     general_vlm_attention_path,
@@ -703,7 +710,6 @@ def eval_policy(
     attention_dir: Path | None = None,
     vlm_attention_dir: Path | None = None,
     general_vlm_attention_dir: Path | None = None,
-    general_vlm_attention_task_text: str = "task: perform the task",
     uncertainty_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
@@ -718,7 +724,6 @@ def eval_policy(
         attention_dir: Where to save action attention maps (if policy supports it).
         vlm_attention_dir: Where to save VLM attention maps (if policy supports it).
         general_vlm_attention_dir: Where to save general VLM attention baseline maps (if policy supports it).
-        general_vlm_attention_task_text: Custom task text for general VLM attention baseline (default: "task: perform the task").
         uncertainty_dir: Where to save uncertainty scores (if policy supports it).
         return_episode_data: Whether to return episode data for online training. Incorporates the data into
             the "episodes" key of the returned dictionary.
@@ -802,7 +807,6 @@ def eval_policy(
             attention_dir=attention_dir,
             vlm_attention_dir=vlm_attention_dir,
             general_vlm_attention_dir=general_vlm_attention_dir,
-            general_vlm_attention_task_text=general_vlm_attention_task_text,
             uncertainty_dir=uncertainty_dir,
             batch_index=batch_ix,
             n_episodes_so_far=batch_ix * env.num_envs,
@@ -1018,7 +1022,7 @@ def eval_main(cfg: EvalPipelineConfig):
                 policy, 
                 cfg.env.task, 
                 cameras=['agentview', 'wrist'],
-                rnd_models_dir=None,  # Use default: uncertainty_quantification/rnd_save_models/
+                rnd_models_dir=cfg.eval.rnd_models_dir,
                 device=str(policy.config.device)
             )
             logging.info("✓ RND models loaded successfully for uncertainty prediction")
@@ -1044,7 +1048,6 @@ def eval_main(cfg: EvalPipelineConfig):
             attention_dir=Path(cfg.output_dir) / "attention" if cfg.eval.save_attention_maps else None,
             vlm_attention_dir=Path(cfg.output_dir) / "vlm_attention" if cfg.eval.save_vlm_attention_maps else None,
             general_vlm_attention_dir=Path(cfg.output_dir) / "general_vlm_attention" if cfg.eval.save_general_vlm_attention_maps else None,
-            general_vlm_attention_task_text=cfg.eval.general_vlm_attention_task_text,
             uncertainty_dir=Path(cfg.output_dir) / "uncertainty" if cfg.eval.save_uncertainty_maps else None,
             start_seed=cfg.seed,
             max_parallel_tasks=cfg.env.max_parallel_tasks,
@@ -1062,7 +1065,7 @@ def eval_main(cfg: EvalPipelineConfig):
     # Add evaluation config to info for documentation
     info["eval_config"] = {
         "save_general_vlm_attention_maps": cfg.eval.save_general_vlm_attention_maps,
-        "general_vlm_attention_task_text": cfg.eval.general_vlm_attention_task_text,
+        "general_vlm_attention_task_text": GENERAL_VLM_ATTENTION_TASK_TEXT,
     }
 
     # Save info
@@ -1097,7 +1100,6 @@ def eval_one(
     attention_dir: Path | None,
     vlm_attention_dir: Path | None,
     general_vlm_attention_dir: Path | None,
-    general_vlm_attention_task_text: str,
     uncertainty_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
@@ -1123,7 +1125,6 @@ def eval_one(
         attention_dir=task_attention_dir,
         vlm_attention_dir=task_vlm_attention_dir,
         general_vlm_attention_dir=task_general_vlm_attention_dir,
-        general_vlm_attention_task_text=general_vlm_attention_task_text,
         uncertainty_dir=task_uncertainty_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
@@ -1154,7 +1155,6 @@ def run_one(
     attention_dir: Path | None,
     vlm_attention_dir: Path | None,
     general_vlm_attention_dir: Path | None,
-    general_vlm_attention_task_text: str,
     uncertainty_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
@@ -1203,7 +1203,6 @@ def run_one(
         attention_dir=task_attention_dir,
         vlm_attention_dir=task_vlm_attention_dir,
         general_vlm_attention_dir=task_general_vlm_attention_dir,
-        general_vlm_attention_task_text=general_vlm_attention_task_text,
         uncertainty_dir=task_uncertainty_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
@@ -1228,7 +1227,6 @@ def eval_policy_all(
     attention_dir: Path | None = None,
     vlm_attention_dir: Path | None = None,
     general_vlm_attention_dir: Path | None = None,
-    general_vlm_attention_task_text: str = "task: perform the task",
     uncertainty_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
@@ -1289,7 +1287,6 @@ def eval_policy_all(
         attention_dir=attention_dir,
         vlm_attention_dir=vlm_attention_dir,
         general_vlm_attention_dir=general_vlm_attention_dir,
-        general_vlm_attention_task_text=general_vlm_attention_task_text,
         uncertainty_dir=uncertainty_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,

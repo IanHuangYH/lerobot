@@ -624,7 +624,8 @@ The evaluation pipeline supports saving **attention weights** from the Pi0.5 pol
 **Purpose**: Establish reference attention pattern without task-specific guidance to measure how task instructions modulate visual attention
 
 **Key Characteristics**:
-- Uses **dummy task instruction**: `"task: perform the task"` (no specific object/action mentioned)
+- Uses **dummy task instruction**: `"task: perform the mission"` (no specific object/action mentioned)
+- **Task text is a constant** defined in `lerobot/utils/constants.py` (not configurable via CLI)
 - Collected **once per action** during prefix encoding (same frequency as VLM attention)
 - Uses **actual robot state** at each timestep (varies with robot pose)
 - Saves **all 18 transformer layers** (layers 0-17)
@@ -639,7 +640,7 @@ The evaluation pipeline supports saving **attention weights** from the Pi0.5 pol
         {
             'rollout_step': 0,
             'general_prefix_attention': {
-                'task_text': 'task: perform the task',  # Dummy task
+                'task_text': 'task: perform the mission',  # Dummy task (constant)
                 'prefix_len': 968,  # 768 (visual) + 200 (language)
                 'attention_weights': {
                     0: torch.Tensor,   # (batch, heads, query_len, key_len)
@@ -655,7 +656,7 @@ The evaluation pipeline supports saving **attention weights** from the Pi0.5 pol
         'episode_index': 0,
         'num_rollout_steps': 145,
         'num_layers': 18,
-        'general_task_used': 'task: perform the task'
+        'general_task_used': 'task: perform the mission'
     }
 }
 ```
