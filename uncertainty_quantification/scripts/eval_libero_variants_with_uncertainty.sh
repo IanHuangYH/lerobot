@@ -6,7 +6,7 @@
 ALL_GPU=0,1
 POLICY_GPU_ID=0
 
-OUTPUT_DIR="uncertainty_quantification/eval_log/vlm_attention_scene_variants"
+OUTPUT_DIR="uncertainty_quantification/eval_log/vlm_general_attention_rnd_long_scene_variants"
 TASK_SUITE=libero_object_variants
 
 # Number of episodes (variants) per task
@@ -28,9 +28,8 @@ USE_INIT_STATES="true"
 SAVE_ATTENTION_MAPS="true"
 SAVE_VLM_ATTENTION_MAPS="true"
 SAVE_GENERAL_VLM_ATTENTION_MAPS="true"
-# Custom task text for general VLM attention baseline (default: "task: perform the task")
-GENERAL_VLM_ATTENTION_TASK_TEXT="task: perform the task"
 SAVE_UNCERTAINTY_MAPS="true"
+RND_MODELS_DIR="uncertainty_quantification/rnd_save_models_long"  # Directory containing trained RND models
 
 echo "================================================================================"
 echo "LIBERO Scene Variants Evaluation with Uncertainty Prediction"
@@ -65,8 +64,8 @@ for TASK_ID in "${TASK_IDS[@]}"; do
         --save_attention_maps "$SAVE_ATTENTION_MAPS" \
         --save_vlm_attention_maps "$SAVE_VLM_ATTENTION_MAPS" \
         --save_general_vlm_attention_maps "$SAVE_GENERAL_VLM_ATTENTION_MAPS" \
-        --general_vlm_attention_task_text "$GENERAL_VLM_ATTENTION_TASK_TEXT" \
         --save_uncertainty_maps "$SAVE_UNCERTAINTY_MAPS" \
+        --rnd_models_dir "$RND_MODELS_DIR" \
         --output_dir "$OUTPUT_DIR" \
         --bddl_dir "$BDDL_DIR" \
         --init_dir "$INIT_DIR"

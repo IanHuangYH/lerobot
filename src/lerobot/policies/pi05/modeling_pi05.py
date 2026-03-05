@@ -905,7 +905,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
                     target_dict['task_text'] = task_text
                 
                 # Store attention from all layers
-                for layer_idx, layer_att in enumerate(att_weights):
+                for layer_idx, layer_att in att_weights.items():
                     if layer_att is not None:
                         # layer_att shape: (batch, heads, seq_len, seq_len)
                         target_dict['attention_weights'][layer_idx] = layer_att.detach().cpu()

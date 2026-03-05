@@ -133,9 +133,12 @@ def run_evaluation_for_variant(
             f"--eval.save_attention_maps={eval_config['save_attention_maps']}",
             f"--eval.save_vlm_attention_maps={eval_config['save_vlm_attention_maps']}",
             f"--eval.save_general_vlm_attention_maps={eval_config['save_general_vlm_attention_maps']}",
-            f"--eval.general_vlm_attention_task_text={eval_config['general_vlm_attention_task_text']}",
             f"--eval.save_uncertainty_maps={eval_config['save_uncertainty_maps']}",
         ]
+        
+        # Add rnd_models_dir if provided
+        if eval_config['rnd_models_dir']:
+            cmd.append(f"--eval.rnd_models_dir={eval_config['rnd_models_dir']}")
         
         # Set CUDA_VISIBLE_DEVICES
         env = {**subprocess.os.environ, 'CUDA_VISIBLE_DEVICES': eval_config['cuda_devices']}
@@ -198,6 +201,24 @@ def run_evaluation_for_variant(
                 new_name = file.name.replace(f"episode_{old_episode_num}", f"episode_{episode_number:05d}")
                 shutil.copy2(file, final_vlm_attention_dir / new_name)
                 print(f"   Copied VLM attention: {new_name}")
+        
+        # Copy general VLM attention files (baseline with dummy task)
+        temp_general_vlm_attention_dir = temp_output_dir / "general_vlm_attention" / task_key
+        final_general_vlm_attention_dir = variants_dir / "general_vlm_attention" / task_key
+        
+        if temp_general_vlm_attention_dir.exists():
+            final_general_vlm_attention_dir.mkdir(parents=True, exist_ok=True)
+            general_vlm_attention_files = list(temp_general_vlm_attention_dir.glob("episode_*_general_vlm_attention.pt"))
+            print(f"   Found {len(general_vlm_attention_files)} general VLM attention files")
+            for file in general_vlm_attention_files:
+                # Extract episode number from original filename
+                # Format: episode_00000_general_vlm_attention.pt
+                old_episode_num = file.stem.split('_')[1]
+                new_name = file.name.replace(f"episode_{old_episode_num}", f"episode_{episode_number:05d}")
+                shutil.copy2(file, final_general_vlm_attention_dir / new_name)
+                print(f"   Copied general VLM attention: {new_name}")
+        else:
+            print(f"   General VLM attention dir not found: {temp_general_vlm_attention_dir}")
         
         # Copy uncertainty files
         temp_uncertainty_dir = temp_output_dir / "uncertainty" / task_key
@@ -337,15 +358,19 @@ def run_evaluation_for_variant(
                 with open(final_eval_info, 'w') as f:
                     json.dump(temp_info, f, indent=2)
         
-        # Clean up temp directory
-        if temp_output_dir.exists():
-            shutil.rmtree(temp_output_dir)
-        
         print(f"\nResults saved to: {variants_dir}")
         
         return True
         
     finally:
+        # Clean up temp directory (ensure this happens even if there's an error)
+        if temp_output_dir.exists():
+            try:
+                shutil.rmtree(temp_output_dir)
+                print(f"   Cleaned up temp directory: {temp_output_dir}")
+            except Exception as e:
+                print(f"   Warning: Failed to clean up temp directory {temp_output_dir}: {e}")
+        
         # Step 5: Restore original files
         if backup_bddl.exists():
             shutil.copy2(backup_bddl, base_bddl_path)
@@ -399,8 +424,8 @@ def main():
     parser.add_argument("--save_attention_maps", type=str, default="true", help="Save attention maps")
     parser.add_argument("--save_vlm_attention_maps", type=str, default="false", help="Save VLM attention maps")
     parser.add_argument("--save_general_vlm_attention_maps", type=str, default="false", help="Save general VLM attention baseline maps")
-    parser.add_argument("--general_vlm_attention_task_text", type=str, default="task: perform the task", help="Custom task text for general VLM attention baseline")
     parser.add_argument("--save_uncertainty_maps", type=str, default="false", help="Save uncertainty maps")
+    parser.add_argument("--rnd_models_dir", type=str, default=None, help="Directory containing trained RND models")
     parser.add_argument("--output_dir", type=str, required=True, help="Base output directory (all tasks)")
     parser.add_argument("--bddl_dir", type=str, required=True, help="Directory containing BDDL files")
     parser.add_argument("--init_dir", type=str, required=True, help="Directory containing init files")
@@ -470,8 +495,8 @@ def main():
         'save_attention_maps': args.save_attention_maps,
         'save_vlm_attention_maps': args.save_vlm_attention_maps,
         'save_general_vlm_attention_maps': args.save_general_vlm_attention_maps,
-        'general_vlm_attention_task_text': args.general_vlm_attention_task_text,
         'save_uncertainty_maps': args.save_uncertainty_maps,
+        'rnd_models_dir': args.rnd_models_dir,
     }
     
     # Run evaluation for each variant
