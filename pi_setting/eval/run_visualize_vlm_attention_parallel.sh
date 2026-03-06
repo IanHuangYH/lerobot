@@ -24,18 +24,18 @@ WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 export PYTHONPATH="${WORKSPACE_DIR}/third_party/LIBERO:${WORKSPACE_DIR}:${PYTHONPATH}"
 
 # Configuration (same as run_visualize_vlm_attention.sh but runs in parallel)
-EVAL_FOLDER="uncertainty_quantification/eval_log/vlm_attention_object_all"
-TASK_NAME="libero_object"
+EVAL_FOLDER="uncertainty_quantification/eval_log/vlm_attention_scene_variants"
+TASK_NAME="libero_object_variants"
 
 # Which type of VLM attention to visualize
 ATTENTION_TYPE="task"   # "task" = task-specific VLM attention, "general" = baseline with dummy task
 
 # Task/episode range
 MAX_TASK_ID=9 # 0-9 for all tasks, set to 0 for just the first task
-MAX_EPISODE_ID=0 # 0-x for number of episodes to visualize per task (0-9), set to 0 for just the first episode
+MAX_EPISODE_ID=6 # 0-x for number of episodes to visualize per task (0-9), set to 0 for just the first episode
 
 # Which parameters to visualize
-LAYERS=(17 16 15 14)  # Can specify multiple: (15 16 17)
+LAYERS=(17 16 15 14 13)  # Can specify multiple: (15 16 17)
 TOKENS=(774 780)    # Can specify multiple token indices to loop through
 # tokens for "pick up the alphabet soup and place it in the basket":
 # Token 768: 'Task           ' (chars   0-  4)
@@ -53,7 +53,7 @@ TOKENS=(774 780)    # Can specify multiple token indices to loop through
 #   Token 780: ' basket        ' (chars  51- 58) ★
 #   Token 781: ',              ' (chars  58- 59)
 HEADS=(0 1 2 3 4 5 6 7)  # Empty () = aggregate all, or specific: (0 1 2 3 4 5 6 7)
-TIMESTEPS=(0 10 20 30 40 50 60 70 80 90 100)
+TIMESTEPS=(0 10 20 30 40 50 60 70 80 90 100) #0 10 20 30 40 50 60 70 80 90 100
 
 # Visualization settings
 HEAD_AGG="mean"
@@ -69,7 +69,7 @@ COLORMAP="hot"
 # New approach: Each file loaded 1x = 70GB I/O (fast!)
 # 
 # Recommended: Use all your CPU cores (15-32) for maximum speed
-NUM_WORKERS=16  # Workers for inner loop (layers/tokens/heads) - use your CPU count!
+NUM_WORKERS=20  # Workers for inner loop (layers/tokens/heads) - use your CPU count!
 
 # =============================================================================
 # Run parallel visualization

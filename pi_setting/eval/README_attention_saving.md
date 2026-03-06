@@ -877,6 +877,33 @@ Each PNG file contains:
 └────────────────────┴────────────────────────────┘
 ```
 
+**Frame Handling and Preprocessing:**
+
+The visualization pipeline includes critical frame preprocessing steps:
+
+1. **Color Space Conversion**: OpenCV loads videos in BGR format, but matplotlib colormaps expect RGB
+   ```python
+   frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Always convert to RGB first
+   ```
+
+2. **Dynamic Frame Splitting**: Videos contain side-by-side cameras (agentview | wrist)
+   ```python
+   H, W = frame.shape[:2]
+   mid = W // 2  # Calculate midpoint dynamically
+   agentview = frame[:, :mid]
+   wrist = frame[:, mid:]
+   ```
+   This replaces older hardcoded splits like `frame[:, :384]` that only worked for specific resolutions.
+
+3. **Coordinate System Transformation**: Wrist camera requires horizontal flip to match model space
+   ```python
+   if cam_name == "wrist":
+       attention_map = torch.flip(attention_tensor, dims=[2])
+   ```
+   Agentview doesn't need transformation as both model and video use same coordinate system.
+
+These preprocessing steps ensure correct visualization colors and proper alignment between attention maps and video frames regardless of resolution.
+
 ### Analysis Workflow for VLM Attention
 
 #### Step 1: Identify Important Tokens
@@ -1456,4 +1483,54 @@ Expected file structure:
 4. **Memory pressure**: Shared memory + worker memory exceeds available RAM
    - Monitor with `htop` or `free -h`
    - Reduce number of workers or process fewer episodes in parallel
+
+**Q: Visualization colors look wrong (blue appears red, etc.)**
+
+**Cause**: Missing BGR→RGB color space conversion. OpenCV loads videos in BGR format, but matplotlib colormaps and display expect RGB.
+
+**Solution**: The current implementation automatically handles this:
+```python
+def load_video_frame(video_path, frame_index):
+    cap = cv2.VideoCapture(str(video_path))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+    ret, frame = cap.read()
+    # Critical: Convert BGR (OpenCV default) to RGB
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+```
+
+If you see incorrect colors, verify this conversion is applied before heatmap overlay.
+
+**Q: Frame split at wrong location / assertion error about frame dimensions**
+
+**Cause**: Hardcoded pixel split instead of dynamic calculation. Older code used `frame[:, :384]` and `frame[:, 384:]` which only works for 768×384 resolution.
+
+**Solution**: The current implementation dynamically calculates midpoint:
+```python
+def split_concatenated_frame(frame):
+    H, W = frame.shape[:2]
+    assert W == 2 * H, f"Expected W=2*H for concatenated cameras, got {W}×{H}"
+    mid = W // 2
+    return frame[:, :mid], frame[:, mid:]  # (agentview, wrist)
+```
+
+This works for any resolution where cameras are side-by-side with same height.
+
+**Q: Wrist camera visualization shows wrong region**
+
+**Cause**: Coordinate system mismatch between model space and video space.
+
+**Details**:
+- **Model space**: LiberoProcessor applies flips to images before feeding to model
+- **Video space**: MP4 files from `env.render()` may have different flips
+- **Agentview**: Both spaces apply same flip → no transformation needed
+- **Wrist**: Model flipped, video not → transformation needed when mapping attention
+
+**Solution**: The visualization scripts automatically handle coordinate transformations:
+```python
+if cam_name == "wrist":
+    # Apply flip to match model's coordinate system
+    attention_map = torch.flip(attention_tensor, dims=[2])  # Flip horizontally
+```
+
+Ensure `apply_flip=True` is set for wrist camera transformations.
 

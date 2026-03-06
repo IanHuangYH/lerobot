@@ -22,6 +22,11 @@ from typing import List, Tuple, Optional, Dict, Any
 import sys
 import time
 import logging
+import matplotlib.pyplot as plt
+from scipy.ndimage import zoom
+import contextlib
+import os
+import traceback
 
 # Suppress verbose LIBERO logging
 logging.getLogger('libero').setLevel(logging.WARNING)
@@ -58,6 +63,193 @@ def get_libero_task_instruction(task_name: str, task_id: int) -> str:
         raise ValueError(f"Task ID {task_id} out of range")
     
     return task_suite.tasks[task_id].language
+
+
+def create_attention_heatmap(
+    attention_map: np.ndarray,
+    img_size: int,
+    colormap: str = "hot",
+) -> np.ndarray:
+    """
+    Create attention heatmap image with colormap (includes alpha channel).
+    
+    Args:
+        attention_map: 2D array [16, 16]
+        img_size: Target size for upsampling
+        colormap: Matplotlib colormap name
+    
+    Returns:
+        RGBA image array [img_size, img_size, 4] with alpha channel
+    """
+    # Upsample to target size
+    grid_size = attention_map.shape[0]
+    zoom_factor = img_size / grid_size
+    upsampled = zoom(attention_map, zoom_factor, order=1)  # Bilinear interpolation
+    
+    # Normalize to [0, 1]
+    if attention_map.max() > 0:
+        upsampled = upsampled / attention_map.max()
+    
+    # Apply colormap (keep alpha channel)
+    cmap = plt.get_cmap(colormap)
+    colored = cmap(upsampled)  # RGBA [img_size, img_size, 4]
+    
+    # Convert to uint8
+    colored = (colored * 255).astype(np.uint8)
+    
+    return colored
+
+
+def overlay_heatmap_on_image(
+    video_frame: np.ndarray,
+    attention_heatmap: np.ndarray,
+    alpha: float = 0.5,
+) -> np.ndarray:
+    """
+    Overlay attention heatmap on top of video frame with transparency.
+    
+    Args:
+        video_frame: RGB image [H, W, 3]
+        attention_heatmap: RGBA heatmap [H, W, 4]
+        alpha: Transparency level for heatmap (0.0 = invisible, 1.0 = opaque)
+    
+    Returns:
+        Combined RGB image [H, W, 3]
+    """
+    # Ensure same size
+    if video_frame.shape[:2] != attention_heatmap.shape[:2]:
+        attention_heatmap = cv2.resize(
+            attention_heatmap, 
+            (video_frame.shape[1], video_frame.shape[0]),
+            interpolation=cv2.INTER_LINEAR
+        )
+    
+    # Convert video frame to float for blending
+    video_float = video_frame.astype(np.float32)
+    
+    # Extract RGB and alpha from heatmap
+    heatmap_rgb = attention_heatmap[:, :, :3].astype(np.float32)
+    heatmap_alpha = attention_heatmap[:, :, 3].astype(np.float32) / 255.0  # Normalize to [0, 1]
+    
+    # Apply additional alpha scaling
+    heatmap_alpha = heatmap_alpha * alpha
+    
+    # Blend: result = video * (1 - alpha) + heatmap * alpha
+    blended = video_float * (1 - heatmap_alpha[:, :, np.newaxis]) + heatmap_rgb * heatmap_alpha[:, :, np.newaxis]
+    
+    # Convert back to uint8
+    blended = np.clip(blended, 0, 255).astype(np.uint8)
+    
+    return blended
+
+
+def create_sidebyside_with_overlay(
+    video_frame: np.ndarray,
+    attention_heatmap: np.ndarray,
+    alpha: float = 0.5,
+    title: str = "",
+) -> np.ndarray:
+    """
+    Create visualization with overlay on left and pure heatmap on right.
+    
+    Args:
+        video_frame: RGB image [H, W, 3]
+        attention_heatmap: RGBA heatmap [H, W, 4]
+        alpha: Transparency for overlay
+        title: Title text
+    
+    Returns:
+        Combined image [H, 2*W, 3] with title bar on top
+    """
+    # Create overlay (left side)
+    overlay = overlay_heatmap_on_image(video_frame, attention_heatmap, alpha)
+    
+    # Create pure heatmap (right side) - convert RGBA to RGB
+    pure_heatmap = attention_heatmap[:, :, :3]
+    
+    # Ensure same size
+    if overlay.shape != pure_heatmap.shape:
+        pure_heatmap = cv2.resize(
+            pure_heatmap,
+            (overlay.shape[1], overlay.shape[0]),
+            interpolation=cv2.INTER_LINEAR
+        )
+    
+    # Concatenate horizontally: [overlay | pure_heatmap]
+    combined = np.hstack([overlay, pure_heatmap])
+    
+    # Add title if provided
+    if title:
+        # Create title bar
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        thickness = 1
+        
+        # Calculate appropriate font scale based on image width
+        # Start with a reasonable font scale and check if text fits
+        font_scale = 0.5
+        text_size = cv2.getTextSize(title, font, font_scale, thickness)[0]
+        
+        # Scale down font if text is too wide
+        if text_size[0] > combined.shape[1] - 20:
+            font_scale = font_scale * (combined.shape[1] - 20) / text_size[0]
+            text_size = cv2.getTextSize(title, font, font_scale, thickness)[0]
+        
+        # Add white bar at top
+        title_height = text_size[1] + 20
+        title_bar = np.ones((title_height, combined.shape[1], 3), dtype=np.uint8) * 255
+        
+        # Add text (centered)
+        text_x = (combined.shape[1] - text_size[0]) // 2
+        text_y = (title_height + text_size[1]) // 2
+        cv2.putText(title_bar, title, (text_x, text_y), font, font_scale, (0, 0, 0), thickness)
+        
+        # Combine with image
+        combined = np.vstack([title_bar, combined])
+    
+    return combined
+
+
+def load_video_frame(video_path: Path, frame_idx: int) -> np.ndarray:
+    """
+    Load a specific frame from MP4 video.
+    
+    Args:
+        video_path: Path to .mp4 file
+        frame_idx: Frame index to load
+    
+    Returns:
+        RGB image array of shape [H, W, 3]
+    """
+    cap = cv2.VideoCapture(str(video_path))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = cap.read()
+    cap.release()
+    
+    if not ret:
+        raise ValueError(f"Failed to load frame {frame_idx} from {video_path}")
+    
+    # Convert BGR to RGB
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+
+def split_concatenated_frame(frame: np.ndarray) -> tuple:
+    """
+    Split concatenated frame into agentview (left) and wrist (right).
+    
+    Args:
+        frame: Concatenated frame of shape [H, W, 3] where W = 2*H
+    
+    Returns:
+        Tuple of (agentview, wrist), each of shape [H, H, 3]
+    """
+    H, W, C = frame.shape
+    assert W == 2 * H, f"Expected width={2*H} for concatenated cameras, got {W}"
+    
+    mid = W // 2
+    agentview = frame[:, :mid, :]
+    wrist = frame[:, mid:, :]
+    
+    return agentview, wrist
 
 
 def load_attention_file_once(attention_path: Path, attention_type: str) -> Dict[str, Any]:
@@ -177,19 +369,14 @@ def process_one_visualization(args_tuple):
             if head_idx >= num_heads:
                 return (False, identifier, f"Head {head_idx} out of range (max: {num_heads-1})")
         
-        # Load video frame
-        cap = cv2.VideoCapture(str(video_path))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, rollout_step)
-        ret, frame = cap.read()
-        cap.release()
-        
-        if not ret:
-            return (False, identifier, f"Failed to load video frame {rollout_step}")
+        # Load video frame and split into cameras
+        frame = load_video_frame(video_path, rollout_step)
+        agentview, wrist = split_concatenated_frame(frame)
         
         # Process both cameras
         cameras = {
-            "agentview": (0, frame[:, :384]),
-            "wrist": (1, frame[:, 384:])
+            "agentview": (0, agentview),
+            "wrist": (1, wrist)
         }
         
         num_img_patches = 256  # 16x16 grid
@@ -234,21 +421,18 @@ def process_one_visualization(args_tuple):
             
             # Reshape to 2D grid [16, 16]
             grid_size = int(np.sqrt(num_img_patches))
-            heatmap = task_to_img.reshape(grid_size, grid_size).float().cpu().numpy()
+            attention_map = task_to_img.reshape(grid_size, grid_size).float().cpu().numpy()
             
             # Normalize to [0, 1]
-            heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
-            # Resize heatmap to match camera resolution
-            heatmap_resized = cv2.resize(heatmap, (cam_frame.shape[1], cam_frame.shape[0]))
+            attention_map = (attention_map - attention_map.min()) / (attention_map.max() - attention_map.min() + 1e-8)
             
-            # Apply colormap
-            heatmap_colored = cv2.applyColorMap(
-                (heatmap_resized * 255).astype(np.uint8),
-                getattr(cv2, f"COLORMAP_{colormap.upper()}")
-            )
+            # Create RGBA heatmap using matplotlib colormap
+            img_size = cam_frame.shape[0]
+            heatmap = create_attention_heatmap(attention_map, img_size, colormap)
             
-            # Overlay
-            overlay = cv2.addWeighted(cam_frame, 1 - alpha, heatmap_colored, alpha, 0)
+            # Create side-by-side visualization with title
+            title = f"{cam_name.capitalize()} | Timestep {rollout_step}"
+            combined = create_sidebyside_with_overlay(cam_frame, heatmap, alpha, title)
             
             # Save
             filename = f"timestep_{rollout_step:03d}_{cam_name}_layer{layer}"
@@ -259,7 +443,7 @@ def process_one_visualization(args_tuple):
             filename += ".png"
             
             output_path = output_dir / filename
-            cv2.imwrite(str(output_path), overlay)
+            cv2.imwrite(str(output_path), cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
         
         return (True, identifier, None)
     
